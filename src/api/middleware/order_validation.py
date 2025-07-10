@@ -5,14 +5,14 @@
 
 from fastapi import HTTPException, Depends
 from bson import ObjectId
-from src.api.models.dealers import DealerInDB
-from src.api.models.sales_men import SalesManInDB
-from motor.moter_asyncio import AsyncIOMotorClient
+from api.models.dealers import DealerInDB
+from api.models.sales_men import SalesManInDB
+from motor.motor_asyncio import AsyncIOMotorDatabase
 
 async def validate_order(
     dealer_id: ObjectId,
     salesman_id: ObjectId,
-    db: AsyncIOMotorClient = Depends()
+    db: AsyncIOMotorDatabase
 ):
     # fetch dealer and salesman from db
     dealer = await db.dealers.find_one({"_id": ObjectId(dealer_id)})

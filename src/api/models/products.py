@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
 from typing import Optional
 from datetime import datetime
 from bson import ObjectId
@@ -10,14 +10,14 @@ class PyObjectId(ObjectId):
         yield cls.validate
 
     @classmethod
-    def validate(cls, v):
+    def validate(cls, v, field=None):
         if not ObjectId.is_valid(v):
             raise ValueError("Invalid ObjectId")
         return ObjectId(v)
 
     @classmethod
-    def __modify_schema__(cls, field_schema):
-        field_schema.update(type="string")
+    def __get_pydantic_json_schema__(cls, schema):
+        return {"type": "string", "pattern": "^[a-fA-F0-9]{24}$"}
 
 # mongo product model
 class ProductInDB(BaseModel):
@@ -56,6 +56,44 @@ class ProductInDB(BaseModel):
                 "product_details": "Growth & overall plant health",
                 "created_at": "2021-06-14T12:34:56.789Z",
                 "updated_at": "2021-06-14T12:34:56.789Z"
+            }
+        }
+
+# Simple model for product response with only id and name
+class ProductSimpleResponse(BaseModel):
+    id: PyObjectId = Field(alias="_id")
+    name: str
+
+    class Config:
+        allow_population_by_field_name = True
+        json_encoders = {ObjectId: str}
+        schema_extra = {
+            "example": {
+                "id": "60c72b2f9b1e8d001c8e4f3c",
+                "name": "Nexpro Nitro Plus"
+            }
+        }
+
+# Model for product packing information
+class ProductPackingResponse(BaseModel):
+    id: PyObjectId = Field(alias="_id")
+    name: str
+    packing_size: str
+    bottles_per_case: int
+    bottle_volume: str
+    moq: str
+
+    class Config:
+        allow_population_by_field_name = True
+        json_encoders = {ObjectId: str}
+        schema_extra = {
+            "example": {
+                "id": "60c72b2f9b1e8d001c8e4f3c",
+                "name": "Nexpro Nitro Plus",
+                "packing_size": "50x100 ML",
+                "bottles_per_case": 50,
+                "bottle_volume": "100 ML",
+                "moq": "one case"
             }
         }
 

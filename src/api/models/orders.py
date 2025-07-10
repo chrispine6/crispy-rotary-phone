@@ -12,14 +12,14 @@ class PyObjectId(ObjectId):
         yield cls.validate
 
     @classmethod
-    def validate(cls, v):
+    def validate(cls, v, *args, **kwargs):
         if not ObjectId.is_valid(v):
             raise ValueError("Invalid ObjectId")
         return ObjectId(v)
 
     @classmethod
-    def __modify_schema__(cls, field_schema):
-        field_schema.update(type="string")
+    def __get_pydantic_json_schema__(cls, schema):
+        return {"type": "string", "pattern": "^[a-fA-F0-9]{24}$"}
 
 # mongo order model
 class OrderInDB(BaseModel):
@@ -27,9 +27,10 @@ class OrderInDB(BaseModel):
     salesman_id: PyObjectId
     dealer_id: PyObjectId
     product_id: PyObjectId
+    quantity: int
     price: float
     state: str
-    status: Literal["approved", "discarded"] = "approved"
+    status: Literal["pending", "approved", "discarded"] = "pending"
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     remarks: Optional[str] = None
@@ -44,12 +45,12 @@ class OrderInDB(BaseModel):
                 "salesman_id": "60c72b2f9b1e8d001c8e4f3a",
                 "dealer_id": "60c72b2f9b1e8d001c8e4f3b",
                 "product_id": "60c72b2f9b1e8d001c8e4f3c",
+                "quantity": 10,
                 "price": 1000.0,
                 "state": "delhi",
-                "status": "approved",
+                "status": "pending",
                 "created_at": "2021-06-14T12:34:56.789Z",
                 "updated_at": "2021-06-14T12:34:56.789Z",
                 "remarks": "Urgent delivery"
             }
         }
-
