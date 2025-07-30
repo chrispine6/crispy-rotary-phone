@@ -1,7 +1,7 @@
 # order model to register orders in the database
 
 from pydantic import BaseModel, Field
-from typing import Optional, Literal
+from typing import Optional, List
 from datetime import datetime
 from bson import ObjectId
 
@@ -21,19 +21,26 @@ class PyObjectId(ObjectId):
     def __get_pydantic_json_schema__(cls, schema):
         return {"type": "string", "pattern": "^[a-fA-F0-9]{24}$"}
 
-# mongo order model
-class OrderInDB(BaseModel):
-    id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
-    salesman_id: PyObjectId
-    dealer_id: PyObjectId
-    product_id: PyObjectId
+class ProductOrder(BaseModel):
+    product_id: str
     quantity: int
     price: float
+    product_name: Optional[str] = None
+
+# mongo order model
+class OrderInDB(BaseModel):
+    id: Optional[PyObjectId] = Field(default=None, alias="_id")
     state: str
-    status: Literal["pending", "approved", "discarded"] = "pending"
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
-    remarks: Optional[str] = None
+    salesman_id: str
+    dealer_id: str
+    products: List[ProductOrder] = Field(default_factory=list)
+    total_price: float
+    status: Optional[str] = Field(default="pending")
+    created_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
+    updated_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
+    discount: Optional[float] = Field(default=0)
+    discounted_total: Optional[float] = Field(default=None)
+    discount_status: Optional[str] = Field(default="approved")  # "pending" if discount > 0, else "approved"
 
     class Config:
         allow_population_by_field_name = True
@@ -42,15 +49,20 @@ class OrderInDB(BaseModel):
         schema_extra = {
             "example": {
                 "_id": "60c72b2f9b1e8d001c8e4f3d",
-                "salesman_id": "60c72b2f9b1e8d001c8e4f3a",
-                "dealer_id": "60c72b2f9b1e8d001c8e4f3b",
-                "product_id": "60c72b2f9b1e8d001c8e4f3c",
-                "quantity": 10,
-                "price": 1000.0,
-                "state": "delhi",
+                "state": "AP",
+                "salesman_id": "60c72b2f9b1e8d001c8e4f3b",
+                "dealer_id": "60c72b2f9b1e8d001c8e4f3a",
+                "products": [
+                    {
+                        "product_id": "60c72b2f9b1e8d001c8e4f3c",
+                        "quantity": 2,
+                        "price": 8500,
+                        "product_name": "Nexpro Nitro Plus"
+                    }
+                ],
+                "total_price": 17000,
                 "status": "pending",
                 "created_at": "2021-06-14T12:34:56.789Z",
-                "updated_at": "2021-06-14T12:34:56.789Z",
-                "remarks": "Urgent delivery"
+                "updated_at": "2021-06-14T12:34:56.789Z"
             }
         }
