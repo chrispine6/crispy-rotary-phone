@@ -1,0 +1,24 @@
+name: nexfarm-api
+services:
+- name: api
+  source_dir: /
+  github:
+    repo: chrispine6/crispy-rotary-phone
+    branch: ui-changes
+  build_command: python3 -m pip install -r requirements.txt --break-system-packages
+  run_command: python3 -m uvicorn src.main:app --host 0.0.0.0 --port $PORT
+  environment_slug: python
+  instance_count: 1
+  instance_size_slug: basic-xxs
+  envs:
+  - key: PYTHONPATH
+    value: /app/src
+  - key: PORT
+    value: "8000"
+  - key: MONGODB_URL
+    value: mongodb+srv://nexfarm_admin:nexfarm_db_password@cluster0.aicbbge.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0
+  - key: DB_NAME
+    value: nexfarm_db
+  - key: ALLOWED_ORIGINS
+    value: http://localhost:3000,http://127.0.0.1:3000,https://friendly-meme-green.vercel.app
+  http_port: 8000

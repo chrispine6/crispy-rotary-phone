@@ -30,6 +30,7 @@ class SalesManInDB(BaseModel):
     dealers: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+    admin: bool = Field(default=True)
     
     class Config:
         allow_population_by_field_name = True
@@ -44,7 +45,8 @@ class SalesManInDB(BaseModel):
                 "state": "delhi",
                 "dealers": ["dealer1", "dealer2"],
                 "created_at": "2021-06-14T12:34:56.789Z",
-                "updated_at": "2021-06-14T12:34:56.789Z"
+                "updated_at": "2021-06-14T12:34:56.789Z",
+                "admin": True
             }
         }
 

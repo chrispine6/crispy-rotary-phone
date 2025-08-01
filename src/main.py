@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import logging
+import os
 from api.routes.database import router as database_router
 from api.routes.order import router as order_router
 from config.settings import MONGODB_URL, DB_NAME
@@ -16,6 +17,24 @@ logging.basicConfig(
 
 # initialise fast api server
 app = FastAPI(title="nexfarm", description="nexfarm server", version="0.1.0")
+
+# CORS configuration - get allowed origins from environment
+allowed_origins = os.getenv("ALLOWED_ORIGINS", "*").split(",")
+if allowed_origins == ["*"]:
+    # Development mode - allow all origins
+    origins = ["*"]
+else:
+    # Production mode - use specific origins
+    origins = [origin.strip() for origin in allowed_origins]
+
+# CORS middleware (must be before routers)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all HTTP methods
+    allow_headers=["*"],
+)
 
 # Global variable for MongoDB client and database
 mongodb_client = None
@@ -36,18 +55,37 @@ async def close_mongo_connection():
     if mongodb_client:
         mongodb_client.close()
 
-# cors middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000"],\
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["*"],
-)
-
 # include router
 app.include_router(database_router, prefix="/api", tags=["database"])
 app.include_router(order_router, prefix="/api/orders", tags=["orders"])
+
+# Health check endpoint
+@app.get("/")
+async def root():
+    return {"message": "NexFarm API is running", "status": "healthy"}
+
+@app.get("/health")
+async def health_check():
+    try:
+        # Test database connection
+        if mongodb is not None:
+            await mongodb.list_collection_names()
+            db_status = "connected"
+        else:
+            db_status = "disconnected"
+        
+        return {
+            "status": "healthy",
+            "database": db_status,
+            "environment": os.getenv("ENVIRONMENT", "development"),
+            "version": "0.1.0"
+        }
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "database": "error",
+            "error": str(e)
+        }
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request, exc):
@@ -59,4 +97,5 @@ async def validation_exception_handler(request, exc):
 
 if __name__ == "__main__":
     import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8002)
     uvicorn.run(app, host="0.0.0.0", port=8002)

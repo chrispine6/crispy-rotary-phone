@@ -26,6 +26,7 @@ class DealerInDB(BaseModel):
     phone: Optional[str] = Field(default=None, max_length=12)
     state: Optional[str] = Field(default=None, max_length=50)
     sales_man_id: PyObjectId
+    credit_limit: int = Field(default=100000)  # Added field
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     
@@ -40,6 +41,7 @@ class DealerInDB(BaseModel):
                 "phone": "1234567890",
                 "state": "delhi",
                 "sales_man_id": "60c72b2f9b1e8d001c8e4f3b",
+                "credit_limit": 100000,
                 "created_at": "2021-06-14T12:34:56.789Z",
                 "updated_at": "2021-06-14T12:34:56.789Z"
             }
@@ -52,6 +54,7 @@ class DealerResponse(BaseModel):
     phone: Optional[str]
     state: Optional[str]
     sales_man_id: PyObjectId
+    credit_limit: int = Field(default=100000)  # Added field
     created_at: datetime
     updated_at: datetime
 
@@ -64,6 +67,7 @@ class DealerResponse(BaseModel):
                 "phone": "1234567890",
                 "state": "delhi",
                 "sales_man_id": "60c72b2f9b1e8d001c8e4f3b",
+                "credit_limit": 100000,
                 "created_at": "2021-06-14T12:34:56.789Z",
                 "updated_at": "2021-06-14T12:34:56.789Z"
             }
