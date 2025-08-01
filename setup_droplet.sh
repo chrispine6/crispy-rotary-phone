@@ -48,7 +48,7 @@ cp .env.example .env
 
 # Update .env file with production values
 cat > .env << EOF
-MONGODB_URL=mongodb+srv://nexfarm_admin:nexfarm_db_password@cluster0.aicbbge.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0
+MONGODB_URL=mongodb+srv://nexfarm_admin:sgFeiUpVjWwuv84W@cluster0.aicbbge.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0
 DB_NAME=nexfarm_db
 PYTHONPATH=/var/www/crispy-rotary-phone/src
 ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,https://friendly-meme-green.vercel.app
@@ -87,7 +87,7 @@ echo "🌐 Configuring Nginx..."
 cat > /etc/nginx/sites-available/nexfarm << EOF
 server {
     listen 80;
-    server_name 143.110.181.10;
+    server_name 209.38.122.225;
     
     # API routes
     location /api/ {
@@ -150,9 +150,9 @@ echo ""
 echo "✅ Setup complete!"
 echo ""
 echo "🔗 Your API endpoints:"
-echo "   Health Check: http://143.110.181.10/health"
-echo "   API Base: http://143.110.181.10/api"
-echo "   Admin Salesmen: http://143.110.181.10/api/orders/admin/salesmen"
+echo "   Health Check: http://209.38.122.225/health"
+echo "   API Base: http://209.38.122.225/api"
+echo "   Admin Salesmen: http://209.38.122.225/api/orders/admin/salesmen"
 echo ""
 echo "📝 To check logs:"
 echo "   Backend: sudo journalctl -u nexfarm -f"

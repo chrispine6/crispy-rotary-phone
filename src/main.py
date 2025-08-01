@@ -68,7 +68,7 @@ async def root():
 async def health_check():
     try:
         # Test database connection
-        if mongodb:
+        if mongodb is not None:
             await mongodb.list_collection_names()
             db_status = "connected"
         else:
