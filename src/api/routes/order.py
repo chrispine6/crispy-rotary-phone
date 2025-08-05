@@ -670,16 +670,42 @@ async def update_product(
 ):
     """Update a product (admin only)."""
     try:
+        logging.info(f"Updating product {product_id} with data: {product_data}")
+        
+        # Validate ObjectId format
+        try:
+            ObjectId(product_id)
+        except Exception as id_error:
+            logging.error(f"Invalid ObjectId format: {product_id}")
+            raise HTTPException(status_code=400, detail="Invalid product ID format")
+        
+        # Remove any _id field from update data to prevent conflicts
+        update_data = {k: v for k, v in product_data.items() if k != '_id'}
+        
         result = await db.products.update_one(
             {"_id": ObjectId(product_id)},
-            {"$set": product_data}
+            {"$set": update_data}
         )
+        
+        logging.info(f"Update result: matched={result.matched_count}, modified={result.modified_count}")
+        
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Product not found")
+        
         if result.modified_count == 1:
             updated_product = await db.products.find_one({"_id": ObjectId(product_id)})
             return clean_object_ids(updated_product)
-        raise HTTPException(status_code=404, detail="Product not found")
+        else:
+            # No changes made (data was identical)
+            existing_product = await db.products.find_one({"_id": ObjectId(product_id)})
+            return clean_object_ids(existing_product)
+            
+    except HTTPException:
+        raise
     except Exception as e:
         logging.error(f"Error updating product: {str(e)}")
+        logging.error(f"Product ID: {product_id}")
+        logging.error(f"Product data: {product_data}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 @router.delete("/admin/products/{product_id}")
