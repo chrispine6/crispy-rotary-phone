@@ -24,8 +24,10 @@ class PyObjectId(ObjectId):
 class ProductOrder(BaseModel):
     product_id: str
     quantity: int
-    price: float
+    price: float  # Base line total BEFORE discount for this product line
     product_name: Optional[str] = None
+    discount_pct: Optional[float] = 0  # New: per-line discount percentage (0-30)
+    discounted_price: Optional[float] = None  # New: line total AFTER discount (derived client-side)
 
 # mongo order model
 class OrderInDB(BaseModel):
@@ -57,11 +59,16 @@ class OrderInDB(BaseModel):
                         "product_id": "60c72b2f9b1e8d001c8e4f3c",
                         "quantity": 2,
                         "price": 8500,
-                        "product_name": "Nexpro Nitro Plus"
+                        "product_name": "Nexpro Nitro Plus",
+                        "discount_pct": 10,
+                        "discounted_price": 7650
                     }
                 ],
                 "total_price": 17000,
+                "discount": 10,
+                "discounted_total": 15300,
                 "status": "pending",
+                "discount_status": "pending",
                 "created_at": "2021-06-14T12:34:56.789Z",
                 "updated_at": "2021-06-14T12:34:56.789Z"
             }

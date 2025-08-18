@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from bson.errors import InvalidId
 from api.middleware.admin_check import admin_check
+from pymongo import ReturnDocument
 
 router = APIRouter(tags=["orders"])
 
@@ -141,11 +142,94 @@ async def create_order(
     try:
         logging.info(f"Received order data: {order.dict()}")
         order_dict = order.dict(by_alias=True)
+        # --- NEW LOGIC: normalize per-product discounts ---
+        products = order_dict.get("products", []) or []
+        sum_base = 0.0
+        sum_discounted = 0.0
+        any_discount = False
+        normalized_products = []
+        for p in products:
+            base = float(p.get("price") or 0)
+            pct = p.get("discount_pct")
+            discounted_line = p.get("discounted_price")
+            # Derive pct from discounted price if missing
+            if (pct is None or pct == "") and discounted_line not in (None, "") and base > 0:
+                try:
+                    discounted_line_val = float(discounted_line)
+                    pct = ((base - discounted_line_val) / base) * 100.0
+                except Exception:
+                    pct = 0
+            # Default pct
+            if pct in (None, ""):
+                pct = 0
+            try:
+                pct = float(pct)
+            except Exception:
+                pct = 0
+            # Clamp pct 0-30
+            if pct < 0: pct = 0
+            if pct > 30: pct = 30
+            # Derive discounted_line if missing
+            if discounted_line in (None, ""):
+                discounted_line = base - (base * pct / 100.0)
+            try:
+                discounted_line = float(discounted_line)
+            except Exception:
+                discounted_line = base
+            line_discount_amt = base - discounted_line
+            if line_discount_amt > 0.0000001:
+                any_discount = True
+            sum_base += base
+            sum_discounted += discounted_line
+            # Store exact (unrounded) values
+            p["discount_pct"] = pct  # no rounding
+            p["discounted_price"] = discounted_line  # no rounding
+            normalized_products.append(p)
+        order_dict["products"] = normalized_products
+        order_dict["total_price"] = sum_base
+        if sum_base > 0:
+            order_dict["discounted_total"] = sum_discounted
+            aggregate_pct = ((sum_base - sum_discounted) / sum_base) * 100.0
+            order_dict["discount"] = aggregate_pct
+        else:
+            order_dict.setdefault("discounted_total", 0)
+            order_dict.setdefault("discount", 0)
+        # Derive discount_status if not provided or inconsistent
+        if any_discount and order_dict.get("discount_status") in (None, "", "approved"):
+            order_dict["discount_status"] = "pending"
+        if not any_discount:
+            order_dict["discount_status"] = "approved"
+        # --- END NEW LOGIC ---
         from datetime import datetime
         now = datetime.utcnow()
         order_dict.setdefault("created_at", now)
-        order_dict.setdefault("updated_at", now)
+        order_dict["updated_at"] = now
         order_dict.setdefault("status", "pending")
+        # --- ORDER CODE LOGIC (FIXED) ---
+        try:
+            state_raw = (order_dict.get("state") or "").strip().upper() or "NA"
+            # Determine fiscal year (Apr 1 - Mar 31)
+            if now.month < 4:
+                start_year = now.year - 1
+            else:
+                start_year = now.year
+            start_year_short = str(start_year)[-2:]
+            end_year_short = str(start_year + 1)[-2:]
+            fiscal_year_str = f"{start_year_short}-{end_year_short}"  # e.g. 24-25
+            # Atomic counter per FY+state. First visible code should end 1000.
+            counter_doc = await db.order_counters.find_one_and_update(
+                {"fiscal_year": fiscal_year_str, "state": state_raw},
+                {"$inc": {"seq": 1}, "$setOnInsert": {"seq": 0}},
+                upsert=True,
+                return_document=ReturnDocument.AFTER
+            )
+            seq_val = counter_doc.get("seq", 0)
+            # seq_val starts at 1 for first order -> produce 1000
+            code_tail = f"1{seq_val-1:03d}" if seq_val > 0 else "1000"
+            order_dict["order_code"] = f"nxg-{fiscal_year_str}-{state_raw}-{code_tail}"
+        except Exception as gen_ex:
+            logging.error(f"Order code generation failed: {gen_ex}")
+        # --- END ORDER CODE LOGIC ---
         # Ensure '_id' is not set for new orders
         order_dict.pop("_id", None)
         result = await db.orders.insert_one(order_dict)
