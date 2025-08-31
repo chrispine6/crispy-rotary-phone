@@ -576,8 +576,13 @@ async def create_salesman(
         salesman_data["updated_at"] = datetime.utcnow()
         if "dealers" not in salesman_data:
             salesman_data["dealers"] = []
-        if "admin" not in salesman_data:
-            salesman_data["admin"] = False
+        # Role support: default salesman; bridge legacy 'admin' flag
+        role = salesman_data.get("role")
+        if role not in ("admin", "sales_manager", "salesman"):
+            role = "salesman"
+        salesman_data["role"] = role
+        # Keep admin boolean for older UI/filters
+        salesman_data["admin"] = True if role == "admin" else bool(salesman_data.get("admin", False))
         
         result = await db.salesmen.insert_one(salesman_data)
         created_salesman = await db.salesmen.find_one({"_id": result.inserted_id})
@@ -597,6 +602,10 @@ async def update_salesman(
     try:
         from datetime import datetime
         salesman_data["updated_at"] = datetime.utcnow()
+        # Role support on update
+        role = salesman_data.get("role")
+        if role in ("admin", "sales_manager", "salesman"):
+            salesman_data["admin"] = True if role == "admin" else False
         
         result = await db.salesmen.update_one(
             {"_id": ObjectId(salesman_id)},
@@ -806,4 +815,347 @@ async def delete_product(
         raise HTTPException(status_code=404, detail="Product not found")
     except Exception as e:
         logging.error(f"Error deleting product: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+# List orders for a specific salesman (by email or salesman_id)
+@router.get("/my-orders")
+async def list_my_orders(
+    uid: str | None = Query(default=None),
+    email: str | None = Query(default=None),
+    salesman_id: str | None = Query(default=None),
+    db: AsyncIOMotorDatabase = Depends(get_db)
+):
+    try:
+        # Resolve salesman_id from uid (preferred) or email
+        if not salesman_id and uid:
+            salesman_doc = await db.salesmen.find_one({"firebase_uid": uid})
+            if salesman_doc:
+                salesman_id = str(salesman_doc.get("_id"))
+        if not salesman_id and email:
+            import re
+            # Case-insensitive exact match on email
+            pattern = f"^{re.escape(email)}$"
+            salesman_doc = await db.salesmen.find_one({"email": {"$regex": pattern, "$options": "i"}})
+            if salesman_doc:
+                salesman_id = str(salesman_doc.get("_id"))
+        if not salesman_id:
+            # If still missing, return empty list (no access)
+            return []
+
+        # Prepare filter that matches both ObjectId and raw string storage forms
+        salesman_filter_values = [salesman_id]
+        try:
+            salesman_filter_values.append(ObjectId(salesman_id))
+        except Exception:
+            pass
+
+        orders_cursor = db.orders.find({"salesman_id": {"$in": salesman_filter_values}})
+        orders = await orders_cursor.to_list(length=1000)
+
+        cleaned_orders = []
+        for order in orders:
+            # Convert _id
+            if "_id" in order and order["_id"] is not None:
+                order["id"] = str(order["_id"])
+                order["_id"] = str(order["_id"])
+            # Normalize salesman_id and attach name
+            sid = order.get("salesman_id")
+            sid_str = str(sid) if sid else ""
+            order["salesman_id"] = sid_str
+            salesman_name = ""
+            salesman_doc = None
+            if sid_str:
+                # Try ObjectId lookup
+                if len(sid_str) == 24:
+                    try:
+                        salesman_doc = await db.salesmen.find_one({"_id": ObjectId(sid_str)})
+                    except Exception:
+                        salesman_doc = None
+                # Fallback string id lookup
+                if not salesman_doc:
+                    salesman_doc = await db.salesmen.find_one({"_id": sid_str})
+                salesman_name = salesman_doc["name"] if salesman_doc and "name" in salesman_doc else ""
+            order["salesman_name"] = salesman_name
+
+            # Normalize dealer_id and attach name
+            did = order.get("dealer_id")
+            did_str = str(did) if did else ""
+            order["dealer_id"] = did_str
+            dealer_name = ""
+            dealer_doc = None
+            if did_str:
+                if len(did_str) == 24:
+                    try:
+                        dealer_doc = await db.dealers.find_one({"_id": ObjectId(did_str)})
+                    except Exception:
+                        dealer_doc = None
+                if not dealer_doc:
+                    dealer_doc = await db.dealers.find_one({"_id": did_str})
+                dealer_name = dealer_doc["name"] if dealer_doc and "name" in dealer_doc else ""
+            order["dealer_name"] = dealer_name
+
+            # Normalize products and attach product names
+            products = order.get("products", [])
+            if not products and "product_id" in order and order["product_id"] is not None:
+                pid = str(order["product_id"])
+                product_entry = {
+                    "product_id": pid,
+                    "quantity": order.get("quantity"),
+                    "price": order.get("price"),
+                    "product_name": None
+                }
+                try:
+                    product_doc = await db.products.find_one({"_id": ObjectId(pid)})
+                    product_entry["product_name"] = product_doc["name"] if product_doc else ""
+                except Exception:
+                    product_entry["product_name"] = ""
+                products = [product_entry]
+                order.pop("product_id", None)
+                order.pop("quantity", None)
+                order.pop("price", None)
+                order.pop("product_name", None)
+            for p in products:
+                pid = p.get("product_id")
+                pid_str = str(pid) if pid else ""
+                p["product_id"] = pid_str
+                product_doc = None
+                if not p.get("product_name"):
+                    if len(pid_str) == 24:
+                        try:
+                            product_doc = await db.products.find_one({"_id": ObjectId(pid_str)}, {"name": 1})
+                        except Exception:
+                            product_doc = None
+                    if not product_doc:
+                        product_doc = await db.products.find_one({"_id": pid_str}, {"name": 1})
+                    p["product_name"] = product_doc["name"] if product_doc and "name" in product_doc else ""
+            order["products"] = products
+
+            # Clean any remaining ObjectId fields
+            order = clean_object_ids(order)
+            cleaned_orders.append(order)
+
+        return cleaned_orders
+    except Exception as e:
+        logging.error(f"Error fetching my orders: {str(e)}")
+        import traceback
+        logging.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+# Get current user profile and role
+@router.get("/me")
+async def get_me(
+    uid: str | None = Query(default=None),
+    email: str | None = Query(default=None),
+    db: AsyncIOMotorDatabase = Depends(get_db)
+):
+    try:
+        doc = None
+        if uid:
+            doc = await db.salesmen.find_one({"firebase_uid": uid})
+        if not doc and email:
+            import re
+            pattern = f"^{re.escape(email)}$"
+            doc = await db.salesmen.find_one({"email": {"$regex": pattern, "$options": "i"}})
+        if not doc:
+            return {"role": "guest"}
+        role = doc.get("role")
+        if role not in ("admin", "sales_manager", "salesman"):
+            role = "admin" if doc.get("admin") else "salesman"
+        out = clean_object_ids(doc)
+        out["role"] = role
+        out["is_admin"] = role == "admin"
+        return out
+    except Exception as e:
+        logging.error(f"Error in /me: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+# List orders for all salesmen under a Sales Manager (and include manager's own orders)
+@router.get("/manager/orders")
+async def list_manager_team_orders(
+    uid: str | None = Query(default=None),
+    email: str | None = Query(default=None),
+    db: AsyncIOMotorDatabase = Depends(get_db)
+):
+    try:
+        # TEST MODE: For testing, treat every user as manager of every salesman.
+        # Return all orders regardless of role or team linkage.
+        orders_cursor = db.orders.find({})
+        orders = await orders_cursor.to_list(length=5000)
+        # Reuse cleaning from admin/my-orders path
+        cleaned_orders = []
+        for order in orders:
+            if "_id" in order and order["_id"] is not None:
+                order["id"] = str(order["_id"])
+                order["_id"] = str(order["_id"])
+            # salesman
+            sid = order.get("salesman_id")
+            sid_str = str(sid) if sid else ""
+            order["salesman_id"] = sid_str
+            sdoc = None
+            if sid_str:
+                if len(sid_str) == 24:
+                    try:
+                        sdoc = await db.salesmen.find_one({"_id": ObjectId(sid_str)})
+                    except Exception:
+                        sdoc = None
+                if not sdoc:
+                    sdoc = await db.salesmen.find_one({"_id": sid_str})
+            order["salesman_name"] = sdoc["name"] if sdoc and "name" in sdoc else ""
+            # dealer
+            did = order.get("dealer_id")
+            did_str = str(did) if did else ""
+            order["dealer_id"] = did_str
+            ddoc = None
+            if did_str:
+                if len(did_str) == 24:
+                    try:
+                        ddoc = await db.dealers.find_one({"_id": ObjectId(did_str)})
+                    except Exception:
+                        ddoc = None
+                if not ddoc:
+                    ddoc = await db.dealers.find_one({"_id": did_str})
+            order["dealer_name"] = ddoc["name"] if ddoc and "name" in ddoc else ""
+            # products names
+            products = order.get("products", [])
+            for p in products:
+                pid = p.get("product_id")
+                pid_str = str(pid) if pid else ""
+                p["product_id"] = pid_str
+                if not p.get("product_name"):
+                    pdoc = None
+                    if len(pid_str) == 24:
+                        try:
+                            pdoc = await db.products.find_one({"_id": ObjectId(pid_str)}, {"name": 1})
+                        except Exception:
+                            pdoc = None
+                    if not pdoc:
+                        pdoc = await db.products.find_one({"_id": pid_str}, {"name": 1})
+                    p["product_name"] = pdoc["name"] if pdoc and "name" in pdoc else ""
+            order["products"] = products
+            cleaned_orders.append(clean_object_ids(order))
+        return cleaned_orders
+    except Exception as e:
+        logging.error(f"Error fetching manager team orders: {str(e)}")
+        import traceback
+        logging.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+# Update an order if it belongs to the manager's team (or self)
+@router.put("/manager/orders/{order_id}")
+async def update_manager_team_order(
+    order_id: str,
+    payload: dict = Body(...),
+    uid: str | None = Query(default=None),
+    email: str | None = Query(default=None),
+    db: AsyncIOMotorDatabase = Depends(get_db)
+):
+    try:
+        # TEST MODE: Allow updates to any order without role/team checks
+        try:
+            oid = ObjectId(order_id)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid order id")
+        order_doc = await db.orders.find_one({"_id": oid})
+        if not order_doc:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        # Prepare update data; normalize products if provided
+        update_data = dict(payload or {})
+        if "_id" in update_data:
+            update_data.pop("_id")
+        # If products present, recompute totals and discounts (reuse logic from create)
+        products = update_data.get("products")
+        if products is not None:
+            sum_base = 0.0
+            sum_discounted = 0.0
+            any_discount = False
+            normalized_products = []
+            for p in products:
+                base = float(p.get("price") or 0)
+                pct = p.get("discount_pct")
+                discounted_line = p.get("discounted_price")
+                if (pct is None or pct == "") and discounted_line not in (None, "") and base > 0:
+                    try:
+                        discounted_line_val = float(discounted_line)
+                        pct = ((base - discounted_line_val) / base) * 100.0
+                    except Exception:
+                        pct = 0
+                if pct in (None, ""):
+                    pct = 0
+                try:
+                    pct = float(pct)
+                except Exception:
+                    pct = 0
+                if pct < 0: pct = 0
+                if pct > 30: pct = 30
+                if discounted_line in (None, ""):
+                    discounted_line = base - (base * pct / 100.0)
+                try:
+                    discounted_line = float(discounted_line)
+                except Exception:
+                    discounted_line = base
+                line_discount_amt = base - discounted_line
+                if line_discount_amt > 0.0000001:
+                    any_discount = True
+                sum_base += base
+                sum_discounted += discounted_line
+                p["discount_pct"] = pct
+                p["discounted_price"] = discounted_line
+                normalized_products.append(p)
+            update_data["products"] = normalized_products
+            update_data["total_price"] = sum_base
+            if sum_base > 0:
+                update_data["discounted_total"] = sum_discounted
+                update_data["discount"] = ((sum_base - sum_discounted) / sum_base) * 100.0
+            else:
+                update_data.setdefault("discounted_total", 0)
+                update_data.setdefault("discount", 0)
+            if any_discount and update_data.get("discount_status") in (None, "", "approved"):
+                update_data["discount_status"] = "pending"
+            if not any_discount:
+                update_data["discount_status"] = "approved"
+
+        from datetime import datetime
+        update_data["updated_at"] = datetime.utcnow()
+        await db.orders.update_one({"_id": oid}, {"$set": update_data})
+        updated = await db.orders.find_one({"_id": oid})
+        return clean_object_ids(updated)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error updating manager order: {str(e)}")
+        import traceback
+        logging.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+# Link a Firebase UID to a salesman (by email). Idempotent.
+@router.post("/link-uid")
+async def link_firebase_uid(
+    payload: dict = Body(...),
+    db: AsyncIOMotorDatabase = Depends(get_db)
+):
+    """
+    Body: { uid: string, email: string }
+    Finds salesman by email (case-insensitive) and sets firebase_uid = uid.
+    Returns the updated salesman or 404 if not found.
+    """
+    try:
+        uid = (payload or {}).get("uid")
+        email = (payload or {}).get("email")
+        if not uid or not email:
+            raise HTTPException(status_code=400, detail="uid and email are required")
+        import re
+        pattern = f"^{re.escape(email)}$"
+        salesman_doc = await db.salesmen.find_one({"email": {"$regex": pattern, "$options": "i"}})
+        if not salesman_doc:
+            raise HTTPException(status_code=404, detail="Salesman not found for email")
+        await db.salesmen.update_one({"_id": salesman_doc["_id"]}, {"$set": {"firebase_uid": uid}})
+        updated = await db.salesmen.find_one({"_id": salesman_doc["_id"]})
+        return clean_object_ids(updated)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error linking firebase uid: {str(e)}")
+        import traceback
+        logging.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
