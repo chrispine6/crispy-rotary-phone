@@ -817,6 +817,144 @@ async def delete_product(
         logging.error(f"Error deleting product: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
+# Admin Sales Managers Management
+@router.get("/admin/sales_managers")
+async def get_all_sales_managers(
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    user=Depends(admin_check)
+):
+    try:
+        cursor = db.sales_managers.find({})
+        items = await cursor.to_list(length=1000)
+        return [clean_object_ids(x) for x in items]
+    except Exception as e:
+        logging.error(f"Error fetching sales managers: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+@router.post("/admin/sales_managers")
+async def create_sales_manager(
+    payload: dict = Body(...),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    user=Depends(admin_check)
+):
+    try:
+        from datetime import datetime
+        payload["created_at"] = datetime.utcnow()
+        payload["updated_at"] = datetime.utcnow()
+        if "active" not in payload:
+            payload["active"] = True
+        result = await db.sales_managers.insert_one(payload)
+        created = await db.sales_managers.find_one({"_id": result.inserted_id})
+        return clean_object_ids(created)
+    except Exception as e:
+        logging.error(f"Error creating sales manager: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+@router.put("/admin/sales_managers/{manager_id}")
+async def update_sales_manager(
+    manager_id: str,
+    payload: dict = Body(...),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    user=Depends(admin_check)
+):
+    try:
+        from datetime import datetime
+        payload["updated_at"] = datetime.utcnow()
+        result = await db.sales_managers.update_one({"_id": ObjectId(manager_id)}, {"$set": payload})
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Sales Manager not found")
+        updated = await db.sales_managers.find_one({"_id": ObjectId(manager_id)})
+        return clean_object_ids(updated)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error updating sales manager: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+@router.delete("/admin/sales_managers/{manager_id}")
+async def delete_sales_manager(
+    manager_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    user=Depends(admin_check)
+):
+    try:
+        result = await db.sales_managers.delete_one({"_id": ObjectId(manager_id)})
+        if result.deleted_count == 1:
+            return {"success": True, "message": "Sales Manager deleted successfully"}
+        raise HTTPException(status_code=404, detail="Sales Manager not found")
+    except Exception as e:
+        logging.error(f"Error deleting sales manager: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+# Admin Directors Management
+@router.get("/admin/directors")
+async def get_all_directors(
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    user=Depends(admin_check)
+):
+    try:
+        cursor = db.directors.find({})
+        items = await cursor.to_list(length=1000)
+        return [clean_object_ids(x) for x in items]
+    except Exception as e:
+        logging.error(f"Error fetching directors: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+@router.post("/admin/directors")
+async def create_director(
+    payload: dict = Body(...),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    user=Depends(admin_check)
+):
+    try:
+        from datetime import datetime
+        payload["created_at"] = datetime.utcnow()
+        payload["updated_at"] = datetime.utcnow()
+        if "active" not in payload:
+            payload["active"] = True
+        result = await db.directors.insert_one(payload)
+        created = await db.directors.find_one({"_id": result.inserted_id})
+        return clean_object_ids(created)
+    except Exception as e:
+        logging.error(f"Error creating director: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+@router.put("/admin/directors/{director_id}")
+async def update_director(
+    director_id: str,
+    payload: dict = Body(...),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    user=Depends(admin_check)
+):
+    try:
+        from datetime import datetime
+        payload["updated_at"] = datetime.utcnow()
+        result = await db.directors.update_one({"_id": ObjectId(director_id)}, {"$set": payload})
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Director not found")
+        updated = await db.directors.find_one({"_id": ObjectId(director_id)})
+        return clean_object_ids(updated)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error updating director: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+@router.delete("/admin/directors/{director_id}")
+async def delete_director(
+    director_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    user=Depends(admin_check)
+):
+    try:
+        result = await db.directors.delete_one({"_id": ObjectId(director_id)})
+        if result.deleted_count == 1:
+            return {"success": True, "message": "Director deleted successfully"}
+        raise HTTPException(status_code=404, detail="Director not found")
+    except Exception as e:
+        logging.error(f"Error deleting director: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
 # List orders for a specific salesman (by email or salesman_id)
 @router.get("/my-orders")
 async def list_my_orders(
