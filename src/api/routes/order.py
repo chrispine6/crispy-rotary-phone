@@ -31,6 +31,166 @@ def clean_object_ids(obj):
     else:
         return obj
 
+# Helper to resolve current user as sales manager and fetch their team salesman ids
+async def _resolve_manager_team_ids(db: AsyncIOMotorDatabase, uid: str | None, email: str | None):
+    try:
+        logging.info(f"DEBUG: _resolve_manager_team_ids called with uid={uid}, email={email}")
+        # Find the salesmen doc for current user by uid/email
+        user_doc = None
+        if uid:
+            user_doc = await db.salesmen.find_one({"firebase_uid": uid})
+            logging.info(f"DEBUG: Found user_doc by uid: {user_doc}")
+        if not user_doc and email:
+            import re
+            pattern = f"^{re.escape(email)}$"
+            user_doc = await db.salesmen.find_one({"email": {"$regex": pattern, "$options": "i"}})
+            logging.info(f"DEBUG: Found user_doc by email: {user_doc}")
+
+        if not user_doc:
+            logging.info("DEBUG: No user_doc found, trying sales_managers lookup")
+            # Try to resolve manager directly from sales_managers using email
+            mgr_doc = None
+            if email:
+                import re
+                pattern = f"^{re.escape(email)}$"
+                mgr_doc = await db.sales_managers.find_one({"email": {"$regex": pattern, "$options": "i"}})
+                logging.info(f"DEBUG: Found mgr_doc by email: {mgr_doc}")
+                if mgr_doc:
+                    ids = mgr_doc.get("salesmen_ids") or []
+                    # Try to include a salesman record with same email as 'own'
+                    try:
+                        sm = await db.salesmen.find_one({"email": {"$regex": pattern, "$options": "i"}}, {"_id": 1})
+                        if sm and sm.get("_id"):
+                            ids = list(ids) + [str(sm.get("_id"))]
+                    except Exception:
+                        pass
+                    ids = [str(x) for x in ids if x]
+                    ids = list(dict.fromkeys(ids))
+                    logging.info(f"DEBUG: Direct mgr lookup returning ids: {ids}")
+                    return ids
+            logging.info("DEBUG: No manager found via direct lookup, returning None")
+            return None
+
+        # Find the sales_managers record by email first, fallback to phone, then name (case-insensitive)
+        mgr_doc = None
+        if user_doc.get("email"):
+            import re
+            pattern = f"^{re.escape(user_doc['email'])}$"
+            mgr_doc = await db.sales_managers.find_one({"email": {"$regex": pattern, "$options": "i"}})
+            logging.info(f"DEBUG: mgr_doc by email: {mgr_doc}")
+        if not mgr_doc and user_doc.get("phone"):
+            import re
+            pattern = f"^{re.escape(str(user_doc['phone']))}$"
+            mgr_doc = await db.sales_managers.find_one({"phone": {"$regex": pattern, "$options": "i"}})
+            logging.info(f"DEBUG: mgr_doc by phone: {mgr_doc}")
+        if not mgr_doc and user_doc.get("name"):
+            import re
+            pattern = f"^{re.escape(user_doc['name'])}$"
+            mgr_doc = await db.sales_managers.find_one({"name": {"$regex": pattern, "$options": "i"}})
+            logging.info(f"DEBUG: mgr_doc by name: {mgr_doc}")
+
+        ids = []
+        if not mgr_doc:
+            # Fallback: use salesmen table where sales_manager matches current manager's name
+            logging.info("DEBUG: No mgr_doc found, using fallback salesmen.sales_manager lookup")
+            if user_doc.get("name"):
+                import re
+                pattern = f"^{re.escape(user_doc['name'])}$"
+                cursor = db.salesmen.find({"sales_manager": {"$regex": pattern, "$options": "i"}}, {"_id": 1})
+                rows = await cursor.to_list(length=2000)
+                ids = [str(r.get("_id")) for r in rows if r.get("_id")]
+                logging.info(f"DEBUG: Fallback found {len(rows)} team members: {ids}")
+            else:
+                ids = []
+                logging.info("DEBUG: No user name for fallback lookup")
+        else:
+            ids = mgr_doc.get("salesmen_ids") or []
+            logging.info(f"DEBUG: Using mgr_doc.salesmen_ids: {ids}")
+
+        # Always include the manager's own salesman id
+        try:
+            own_id = str(user_doc.get("_id")) if user_doc.get("_id") is not None else None
+            if own_id:
+                ids = list(ids) + [own_id]
+                logging.info(f"DEBUG: Added own_id {own_id}, ids now: {ids}")
+        except Exception:
+            pass
+
+        # Normalize and de-duplicate to strings
+        ids = [str(x) for x in ids if x]
+        ids = list(dict.fromkeys(ids))
+        logging.info(f"DEBUG: Final team_ids: {ids}")
+        return ids
+    except Exception:
+        return None
+
+@router.get("/manager/team/dealers")
+async def get_manager_team_dealers(
+    uid: str | None = Query(default=None),
+    email: str | None = Query(default=None),
+    db: AsyncIOMotorDatabase = Depends(get_db)
+):
+    """Return all dealers belonging to any salesman under the current manager's team."""
+    try:
+        logging.info(f"DEBUG: Fetching team dealers for uid={uid}, email={email}")
+        
+        # TEST MODE: For testing purposes, return ALL dealers when user is a sales manager
+        # First check if user is a sales manager
+        user_doc = None
+        if uid:
+            user_doc = await db.salesmen.find_one({"firebase_uid": uid})
+        if not user_doc and email:
+            import re
+            pattern = f"^{re.escape(email)}$"
+            user_doc = await db.salesmen.find_one({"email": {"$regex": pattern, "$options": "i"}})
+        
+        if user_doc and user_doc.get("role") == "sales_manager":
+            logging.info(f"DEBUG: User is sales_manager, returning ALL dealers for testing")
+            cursor = db.dealers.find({}, {"_id": 1, "name": 1, "sales_man_id": 1})
+            dealers = await cursor.to_list(length=2000)
+            out = []
+            for d in dealers:
+                out.append({
+                    "id": str(d.get("_id")),
+                    "name": d.get("name"),
+                    "sales_man_id": str(d.get("sales_man_id")) if d.get("sales_man_id") is not None else None
+                })
+            logging.info(f"DEBUG: Returning {len(out)} dealers for sales manager")
+            return out
+        
+        # Fallback to original logic for non-managers
+        team_ids = await _resolve_manager_team_ids(db, uid, email)
+        logging.info(f"DEBUG: Resolved team_ids: {team_ids}")
+        if not team_ids:
+            logging.info("DEBUG: No team_ids found, returning empty list")
+            return []
+        # Build $in with both ObjectIds and raw string ids for compatibility
+        in_list = []
+        for sid in team_ids:
+            in_list.append(sid)
+            try:
+                in_list.append(ObjectId(sid))
+            except Exception:
+                pass
+        logging.info(f"DEBUG: Using in_list for dealer query: {in_list}")
+        cursor = db.dealers.find({"sales_man_id": {"$in": in_list}}, {"_id": 1, "name": 1, "sales_man_id": 1})
+        dealers = await cursor.to_list(length=2000)
+        logging.info(f"DEBUG: Found {len(dealers)} dealers: {dealers}")
+        out = []
+        for d in dealers:
+            out.append({
+                "id": str(d.get("_id")),
+                "name": d.get("name"),
+                "sales_man_id": str(d.get("sales_man_id")) if d.get("sales_man_id") is not None else None
+            })
+        logging.info(f"DEBUG: Returning dealers: {out}")
+        return out
+    except Exception as e:
+        logging.error(f"Error fetching manager team dealers: {str(e)}")
+        import traceback
+        logging.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
 # endpoint to fetch all salesman by state
 @router.get("/salesmen", response_model=List[SalesManSimpleResponse])
 async def get_salesmen_by_state(
@@ -68,13 +228,89 @@ async def get_dealers_by_salesman(
 ):
     logging.info(f"Searching for dealers with salesman_id: '{salesman_id}'")
     
+    # Check if this salesman is actually a sales manager
+    try:
+        salesman_doc = await db.salesmen.find_one({"_id": ObjectId(salesman_id)})
+        if salesman_doc and salesman_doc.get("role") == "sales_manager":
+            logging.info(f"DEBUG: Salesman {salesman_id} is a sales_manager, fetching team dealers")
+            
+            # Find the sales_managers record to get team members
+            mgr_doc = None
+            if salesman_doc.get("email"):
+                import re
+                pattern = f"^{re.escape(salesman_doc['email'])}$"
+                mgr_doc = await db.sales_managers.find_one({"email": {"$regex": pattern, "$options": "i"}})
+            if not mgr_doc and salesman_doc.get("phone"):
+                import re
+                pattern = f"^{re.escape(str(salesman_doc['phone']))}$"
+                mgr_doc = await db.sales_managers.find_one({"phone": {"$regex": pattern, "$options": "i"}})
+            if not mgr_doc and salesman_doc.get("name"):
+                import re
+                pattern = f"^{re.escape(salesman_doc['name'])}$"
+                mgr_doc = await db.sales_managers.find_one({"name": {"$regex": pattern, "$options": "i"}})
+            
+            team_ids = []
+            if mgr_doc:
+                team_ids = mgr_doc.get("salesmen_ids") or []
+                logging.info(f"DEBUG: Found team_ids from sales_managers: {team_ids}")
+            else:
+                # Fallback: find team members via salesmen.sales_manager field
+                if salesman_doc.get("name"):
+                    import re
+                    pattern = f"^{re.escape(salesman_doc['name'])}$"
+                    cursor = db.salesmen.find({"sales_manager": {"$regex": pattern, "$options": "i"}}, {"_id": 1})
+                    rows = await cursor.to_list(length=2000)
+                    team_ids = [str(r.get("_id")) for r in rows if r.get("_id")]
+                    logging.info(f"DEBUG: Found team_ids via fallback: {team_ids}")
+            
+            # Always include the manager's own id
+            team_ids = list(team_ids) + [salesman_id]
+            team_ids = [str(x) for x in team_ids if x]
+            team_ids = list(dict.fromkeys(team_ids))  # Remove duplicates
+            
+            logging.info(f"DEBUG: Final team_ids for manager: {team_ids}")
+            
+            # Build query to get all dealers for the team
+            in_list = []
+            for sid in team_ids:
+                in_list.append(sid)
+                try:
+                    in_list.append(ObjectId(sid))
+                except Exception:
+                    pass
+            
+            dealers_cursor = db.dealers.find(
+                {"sales_man_id": {"$in": in_list}},
+                {"_id": 1, "name": 1}
+            )
+            dealers = await dealers_cursor.to_list(length=2000)
+            
+            dealers_response = []
+            for dealer in dealers:
+                dealers_response.append({
+                    "id": str(dealer["_id"]),
+                    "name": dealer["name"]
+                })
+            
+            logging.info(f"DEBUG: Returning {len(dealers_response)} team dealers for manager")
+            return dealers_response
+            
+    except Exception as e:
+        logging.error(f"Error checking if salesman is manager: {e}")
+    
+    # Regular salesman logic
     # Check total documents in dealers collection
     total_count = await db.dealers.count_documents({})
     logging.info(f"Total dealers in database: {total_count}")
     
-    # Convert salesman_id to ObjectId and search for dealers
+    # Build compatibility filter to match both ObjectId and raw string stored ids
+    in_list = [salesman_id]
+    try:
+        in_list.append(ObjectId(salesman_id))
+    except Exception:
+        pass
     dealers_cursor = db.dealers.find(
-        {"sales_man_id": ObjectId(salesman_id)},
+        {"sales_man_id": {"$in": in_list}},
         {"_id": 1, "name": 1}  # Only return id and name
     )
     dealers = await dealers_cursor.to_list(length=100)
@@ -1087,14 +1323,18 @@ async def get_me(
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
     try:
+        logging.info(f"DEBUG: /me called with uid={uid}, email={email}")
         doc = None
         if uid:
             doc = await db.salesmen.find_one({"firebase_uid": uid})
+            logging.info(f"DEBUG: Found doc by uid: {doc}")
         if not doc and email:
             import re
             pattern = f"^{re.escape(email)}$"
             doc = await db.salesmen.find_one({"email": {"$regex": pattern, "$options": "i"}})
+            logging.info(f"DEBUG: Found doc by email: {doc}")
         if not doc:
+            logging.info("DEBUG: No doc found, returning guest")
             return {"role": "guest"}
         role = doc.get("role")
         if role not in ("admin", "sales_manager", "salesman"):
@@ -1102,6 +1342,7 @@ async def get_me(
         out = clean_object_ids(doc)
         out["role"] = role
         out["is_admin"] = role == "admin"
+        logging.info(f"DEBUG: Returning user with role: {role}, full response: {out}")
         return out
     except Exception as e:
         logging.error(f"Error in /me: {str(e)}")
