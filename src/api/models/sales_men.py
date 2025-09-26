@@ -28,6 +28,7 @@ class SalesManInDB(BaseModel):
     phone: Optional[str] = Field(default=None, max_length=12)
     state: Optional[str] = Field(default=None, max_length=50)
     dealers: list[str] = Field(default_factory=list)
+    firebase_uid: Optional[str] = Field(default=None)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     admin: bool = Field(default=True)
@@ -44,6 +45,7 @@ class SalesManInDB(BaseModel):
                 "phone": "1234567890",
                 "state": "delhi",
                 "dealers": ["dealer1", "dealer2"],
+                "firebase_uid": "firebase-uid-xyz",
                 "created_at": "2021-06-14T12:34:56.789Z",
                 "updated_at": "2021-06-14T12:34:56.789Z",
                 "admin": True
@@ -58,6 +60,7 @@ class SalesManResponse(BaseModel):
     phone: Optional[str]
     state: Optional[str]
     dealers: list[str]
+    firebase_uid: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -71,6 +74,7 @@ class SalesManResponse(BaseModel):
                 "phone": "1234567890",
                 "state": "delhi",
                 "dealers": ["dealer1", "dealer2"],
+                "firebase_uid": "firebase-uid-xyz",
                 "created_at": "2021-06-14T12:34:56.789Z",
             }
         }

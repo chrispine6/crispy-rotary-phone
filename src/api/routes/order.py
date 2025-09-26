@@ -1,6 +1,10 @@
 # logic for making orders
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
+router = APIRouter(tags=["orders"])
+
+# Admin utility: clear all firebase_uid fields on salesmen and directors
+
 from typing import List
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -1325,14 +1329,40 @@ async def get_me(
     try:
         logging.info(f"DEBUG: /me called with uid={uid}, email={email}")
         doc = None
+        # 1. Try to find director by firebase_uid
+        if uid:
+            doc = await db.directors.find_one({"firebase_uid": uid})
+            if doc:
+                logging.info(f"DEBUG: Found director by uid: {doc}")
+                out = clean_object_ids(doc)
+                out["role"] = "director"
+                out["is_admin"] = False
+                return out
+        # 2. Try to find director by email
+        if not doc and email:
+            import re
+            pattern = f"^{re.escape(email)}$"
+            doc = await db.directors.find_one({"email": {"$regex": pattern, "$options": "i"}})
+            if doc:
+                logging.info(f"DEBUG: Found director by email: {doc}")
+                out = clean_object_ids(doc)
+                out["role"] = "director"
+                out["is_admin"] = False
+                return out
+        # 3. Try to find salesman by firebase_uid
         if uid:
             doc = await db.salesmen.find_one({"firebase_uid": uid})
-            logging.info(f"DEBUG: Found doc by uid: {doc}")
+            logging.info(f"DEBUG: Found salesman by uid: {doc}")
+        # 4. Try to find salesman by email
         if not doc and email:
             import re
             pattern = f"^{re.escape(email)}$"
             doc = await db.salesmen.find_one({"email": {"$regex": pattern, "$options": "i"}})
-            logging.info(f"DEBUG: Found doc by email: {doc}")
+            logging.info(f"DEBUG: Found salesman by email: {doc}")
+            # Block login if firebase_uid is not set
+            if doc and not doc.get("firebase_uid"):
+                logging.info("DEBUG: Email matched but firebase_uid not set; blocking login.")
+                return {"role": "guest", "error": "firebase_uid not set for this user"}
         if not doc:
             logging.info("DEBUG: No doc found, returning guest")
             return {"role": "guest"}
@@ -1356,11 +1386,20 @@ async def list_manager_team_orders(
     db: AsyncIOMotorDatabase = Depends(get_db)
 ):
     try:
-        # TEST MODE: For testing, treat every user as manager of every salesman.
-        # Return all orders regardless of role or team linkage.
-        orders_cursor = db.orders.find({})
-        orders = await orders_cursor.to_list(length=5000)
-        # Reuse cleaning from admin/my-orders path
+        # Get all salesman_ids for this manager (including their own)
+        team_ids = await _resolve_manager_team_ids(db, uid, email)
+        if not team_ids:
+            return []
+        # Build $in with both ObjectIds and raw string ids for compatibility
+        in_list = []
+        for sid in team_ids:
+            in_list.append(sid)
+            try:
+                in_list.append(ObjectId(sid))
+            except Exception:
+                pass
+        orders_cursor = db.orders.find({"salesman_id": {"$in": in_list}})
+        orders = await orders_cursor.to_list(length=2000)
         cleaned_orders = []
         for order in orders:
             if "_id" in order and order["_id"] is not None:
@@ -1519,17 +1558,44 @@ async def link_firebase_uid(
     Returns the updated salesman or 404 if not found.
     """
     try:
+        import logging
         uid = (payload or {}).get("uid")
         email = (payload or {}).get("email")
+        logging.info(f"/link-uid called with email='{email}', uid='{uid}'")
         if not uid or not email:
+            logging.warning("/link-uid missing uid or email")
             raise HTTPException(status_code=400, detail="uid and email are required")
         import re
         pattern = f"^{re.escape(email)}$"
-        salesman_doc = await db.salesmen.find_one({"email": {"$regex": pattern, "$options": "i"}})
-        if not salesman_doc:
-            raise HTTPException(status_code=404, detail="Salesman not found for email")
-        await db.salesmen.update_one({"_id": salesman_doc["_id"]}, {"$set": {"firebase_uid": uid}})
-        updated = await db.salesmen.find_one({"_id": salesman_doc["_id"]})
+        # Try salesmen first
+        user_doc = await db.salesmen.find_one({"email": {"$regex": pattern, "$options": "i"}})
+        user_type = "salesman"
+        # If not found, try sales managers
+        if not user_doc:
+            user_doc = await db.sales_managers.find_one({"email": {"$regex": pattern, "$options": "i"}})
+            user_type = "sales_manager" if user_doc else user_type
+        # If not found, try directors
+        if not user_doc:
+            user_doc = await db.directors.find_one({"email": {"$regex": pattern, "$options": "i"}})
+            user_type = "director" if user_doc else user_type
+        logging.info(f"/link-uid found {user_type}_doc: {user_doc}")
+        if not user_doc:
+            logging.warning(f"/link-uid: No user found for email '{email}'")
+            raise HTTPException(status_code=404, detail="User not found for email")
+        # Update the correct collection
+        if user_type == "salesman":
+            update_result = await db.salesmen.update_one({"_id": user_doc["_id"]}, {"$set": {"firebase_uid": uid}})
+            updated = await db.salesmen.find_one({"_id": user_doc["_id"]})
+        elif user_type == "sales_manager":
+            update_result = await db.sales_managers.update_one({"_id": user_doc["_id"]}, {"$set": {"firebase_uid": uid}})
+            updated = await db.sales_managers.find_one({"_id": user_doc["_id"]})
+        elif user_type == "director":
+            update_result = await db.directors.update_one({"_id": user_doc["_id"]}, {"$set": {"firebase_uid": uid}})
+            updated = await db.directors.find_one({"_id": user_doc["_id"]})
+        else:
+            raise HTTPException(status_code=500, detail="Unknown user type")
+        logging.info(f"/link-uid update_result: matched={update_result.matched_count}, modified={update_result.modified_count}")
+        logging.info(f"/link-uid updated {user_type}_doc: {updated}")
         return clean_object_ids(updated)
     except HTTPException:
         raise
@@ -1537,4 +1603,21 @@ async def link_firebase_uid(
         logging.error(f"Error linking firebase uid: {str(e)}")
         import traceback
         logging.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+# Admin utility: clear all firebase_uid fields on salesmen and directors
+@router.post("/admin/clear-firebase-uids")
+async def admin_clear_firebase_uids(
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    user=Depends(admin_check)
+):
+    try:
+        res1 = await db.salesmen.update_many({}, {"$unset": {"firebase_uid": ""}})
+        try:
+            res2 = await db.directors.update_many({}, {"$unset": {"firebase_uid": ""}})
+        except Exception:
+            res2 = type("x", (), {"matched_count": 0, "modified_count": 0})()
+        return {"matched_salesmen": res1.matched_count, "modified_salesmen": res1.modified_count, "matched_directors": getattr(res2, 'matched_count', 0), "modified_directors": getattr(res2, 'modified_count', 0)}
+    except Exception as e:
+        logging.error(f"Error clearing firebase_uids: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
