@@ -376,12 +376,61 @@ async def get_product_packing_by_name(
     logging.info(f"Products packing info: {products}")
     return products
 
-def send_email_to_boss(subject:str, body:str):
+def send_email_to_boss(subject: str, order: dict):
     msg = EmailMessage()
     msg['Subject'] = subject
     msg['From'] = EMAIL_USER
     msg['To'] = BOSS_EMAIL
-    msg.set_content(body)
+
+    # Build HTML content
+    order_code = order.get('order_code', '')
+    dealer = order.get('dealer_name', order.get('dealer_id', ''))
+    salesman = order.get('salesman_name', order.get('salesman_id', ''))
+    total = order.get('total_price', 0)
+    discounted_total = order.get('discounted_total', 0)
+    discount = order.get('discount', 0)
+    status = order.get('status', '')
+    products = order.get('products', [])
+
+    product_rows = ""
+    for p in products:
+        product_rows += f"""
+        <tr>
+            <td>{p.get('product_name', '')}</td>
+            <td>{p.get('quantity', '')}</td>
+            <td>{p.get('price', '')}</td>
+            <td>{p.get('discount_pct', '')}%</td>
+            <td>{p.get('discounted_price', '')}</td>
+        </tr>
+        """
+
+    html = f"""
+    <html>
+    <body style="font-family: Arial, sans-serif;">
+        <h2 style="color:#2E86C1;">New Order Registered</h2>
+        <p><b>Order Code:</b> {order_code}</p>
+        <p><b>Dealer:</b> {dealer}</p>
+        <p><b>Salesman:</b> {salesman}</p>
+        <p><b>Status:</b> {status}</p>
+        <p><b>Total Price:</b> ₹{total:,.2f}</p>
+        <p><b>Discounted Total:</b> ₹{discounted_total:,.2f} ({discount:.2f}%)</p>
+        <h3>Products</h3>
+        <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
+            <tr style="background-color:#D6EAF8;">
+                <th>Product</th>
+                <th>Quantity</th>
+                <th>Base Price</th>
+                <th>Discount %</th>
+                <th>Discounted Price</th>
+            </tr>
+            {product_rows}
+        </table>
+    </body>
+    </html>
+    """
+
+    msg.set_content("A new order has been registered. Please view in HTML format for details.")
+    msg.add_alternative(html, subtype='html')
 
     try:
         with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
@@ -499,8 +548,7 @@ async def create_order(
 
         # Send email to boss after successful order registration
         subject = f"New Order Registered: {order_dict.get('order_code', '')}"
-        body = f"Order details:\n{order_dict}"
-        send_email_to_boss(subject, body)
+        send_email_to_boss(subject, order_dict)
 
         return order_dict
     except RequestValidationError as e:
@@ -1647,3 +1695,4 @@ async def admin_clear_firebase_uids(
     except Exception as e:
         logging.error(f"Error clearing firebase_uids: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
