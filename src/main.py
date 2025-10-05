@@ -3,8 +3,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import logging
 import os
+import sys
+
+# Add the current directory to Python path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 from api.routes.database import router as database_router
 from api.routes.order import router as order_router
+from api.routes.forecasts import router as forecast_router
 from config.settings import MONGODB_URL, DB_NAME
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -58,6 +64,7 @@ async def close_mongo_connection():
 # include router
 app.include_router(database_router, prefix="/api", tags=["database"])
 app.include_router(order_router, prefix="/api/orders", tags=["orders"])
+app.include_router(forecast_router, prefix="/api", tags=["forecasts"])
 
 # Health check endpoint
 @app.get("/")
@@ -97,5 +104,4 @@ async def validation_exception_handler(request, exc):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8002)
-    uvicorn.run(app, host="0.0.0.0", port=8002)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
