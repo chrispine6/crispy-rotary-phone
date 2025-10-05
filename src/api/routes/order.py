@@ -21,6 +21,10 @@ from bson.errors import InvalidId
 from api.middleware.admin_check import admin_check
 from pymongo import ReturnDocument
 
+import smtplib
+from email.message import EmailMessage
+from config.settings import EMAIL_HOST, EMAIL_PORT, EMAIL_USER, EMAIL_PASS, BOSS_EMAIL
+
 router = APIRouter(tags=["orders"])
 
 # Function to clean ObjectId fields from MongoDB documents
@@ -372,6 +376,22 @@ async def get_product_packing_by_name(
     logging.info(f"Products packing info: {products}")
     return products
 
+def send_email_to_boss(subject:str, body:str):
+    msg = EmailMessage()
+    msg['Subject'] = subject
+    msg['From'] = EMAIL_USER
+    msg['To'] = BOSS_EMAIL
+    msg.set_content(body)
+
+    try:
+        with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
+            server.starttls()
+            server.login(EMAIL_USER, EMAIL_PASS)
+            server.send_message(msg)
+        print("Email sent to boss.")
+    except Exception as e:
+        print(f"Failed to send email: {e}")
+
 # Create an order document with order validation middleware
 @router.post("/make-order", response_model=OrderInDB)
 async def create_order(
@@ -476,6 +496,12 @@ async def create_order(
         if not result.inserted_id:
             raise HTTPException(status_code=500, detail="Order creation failed")
         order_dict["_id"] = result.inserted_id
+
+        # Send email to boss after successful order registration
+        subject = f"New Order Registered: {order_dict.get('order_code', '')}"
+        body = f"Order details:\n{order_dict}"
+        send_email_to_boss(subject, body)
+
         return order_dict
     except RequestValidationError as e:
         logging.error(f"Validation error while creating order: {e.errors()}")
