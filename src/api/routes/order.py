@@ -21,6 +21,10 @@ from bson.errors import InvalidId
 from api.middleware.admin_check import admin_check
 from pymongo import ReturnDocument
 
+import smtplib
+from email.message import EmailMessage
+from config.settings import EMAIL_HOST, EMAIL_PORT, EMAIL_USER, EMAIL_PASS, BOSS_EMAIL
+
 router = APIRouter(tags=["orders"])
 
 # Function to clean ObjectId fields from MongoDB documents
@@ -372,6 +376,71 @@ async def get_product_packing_by_name(
     logging.info(f"Products packing info: {products}")
     return products
 
+def send_email_to_boss(subject: str, order: dict):
+    msg = EmailMessage()
+    msg['Subject'] = subject
+    msg['From'] = EMAIL_USER
+    msg['To'] = BOSS_EMAIL
+
+    # Build HTML content
+    order_code = order.get('order_code', '')
+    dealer = order.get('dealer_name', order.get('dealer_id', ''))
+    salesman = order.get('salesman_name', order.get('salesman_id', ''))
+    total = order.get('total_price', 0)
+    discounted_total = order.get('discounted_total', 0)
+    discount = order.get('discount', 0)
+    status = order.get('status', '')
+    products = order.get('products', [])
+
+    product_rows = ""
+    for p in products:
+        product_rows += f"""
+        <tr>
+            <td>{p.get('product_name', '')}</td>
+            <td>{p.get('quantity', '')}</td>
+            <td>{p.get('price', '')}</td>
+            <td>{p.get('discount_pct', '')}%</td>
+            <td>{p.get('discounted_price', '')}</td>
+        </tr>
+        """
+
+    html = f"""
+    <html>
+    <body style="font-family: Arial, sans-serif;">
+        <h2 style="color:#2E86C1;">New Order Registered</h2>
+        <p><b>Order Code:</b> {order_code}</p>
+        <p><b>Dealer:</b> {dealer}</p>
+        <p><b>Salesman:</b> {salesman}</p>
+        <p><b>Status:</b> {status}</p>
+        <p><b>Total Price:</b> ₹{total:,.2f}</p>
+        <p><b>Discounted Total:</b> ₹{discounted_total:,.2f} ({discount:.2f}%)</p>
+        <h3>Products</h3>
+        <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
+            <tr style="background-color:#D6EAF8;">
+                <th>Product</th>
+                <th>Quantity</th>
+                <th>Base Price</th>
+                <th>Discount %</th>
+                <th>Discounted Price</th>
+            </tr>
+            {product_rows}
+        </table>
+    </body>
+    </html>
+    """
+
+    msg.set_content("A new order has been registered. Please view in HTML format for details.")
+    msg.add_alternative(html, subtype='html')
+
+    try:
+        with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
+            server.starttls()
+            server.login(EMAIL_USER, EMAIL_PASS)
+            server.send_message(msg)
+        print("Email sent to boss.")
+    except Exception as e:
+        print(f"Failed to send email: {e}")
+
 # Create an order document with order validation middleware
 @router.post("/make-order", response_model=OrderInDB)
 async def create_order(
@@ -476,6 +545,11 @@ async def create_order(
         if not result.inserted_id:
             raise HTTPException(status_code=500, detail="Order creation failed")
         order_dict["_id"] = result.inserted_id
+
+        # Send email to boss after successful order registration
+        subject = f"New Order Registered: {order_dict.get('order_code', '')}"
+        send_email_to_boss(subject, order_dict)
+
         return order_dict
     except RequestValidationError as e:
         logging.error(f"Validation error while creating order: {e.errors()}")
@@ -1621,3 +1695,4 @@ async def admin_clear_firebase_uids(
     except Exception as e:
         logging.error(f"Error clearing firebase_uids: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
