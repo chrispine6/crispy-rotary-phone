@@ -376,7 +376,7 @@ async def get_product_packing_by_name(
     logging.info(f"Products packing info: {products}")
     return products
 
-def send_email_to_boss(subject: str, order: dict):
+async def send_email_to_boss(subject: str, order: dict, db: AsyncIOMotorDatabase):
     msg = EmailMessage()
     msg['Subject'] = subject
     msg['From'] = EMAIL_USER
@@ -384,47 +384,135 @@ def send_email_to_boss(subject: str, order: dict):
 
     # Build HTML content
     order_code = order.get('order_code', '')
-    dealer = order.get('dealer_name', order.get('dealer_id', ''))
-    salesman = order.get('salesman_name', order.get('salesman_id', ''))
+    order_id = str(order.get('_id', ''))
     total = order.get('total_price', 0)
     discounted_total = order.get('discounted_total', 0)
     discount = order.get('discount', 0)
     status = order.get('status', '')
+    state = order.get('state', '')
     products = order.get('products', [])
+    
+    # Fetch dealer name
+    dealer_name = "Unknown Dealer"
+    dealer_id = order.get('dealer_id')
+    if dealer_id:
+        try:
+            if len(str(dealer_id)) == 24:
+                dealer_doc = await db.dealers.find_one({"_id": ObjectId(dealer_id)}, {"name": 1})
+            else:
+                dealer_doc = await db.dealers.find_one({"_id": dealer_id}, {"name": 1})
+            if dealer_doc:
+                dealer_name = dealer_doc.get('name', dealer_name)
+        except Exception as e:
+            logging.error(f"Error fetching dealer name: {e}")
+    
+    # Fetch salesman name
+    salesman_name = "Unknown Salesman"
+    salesman_id = order.get('salesman_id')
+    if salesman_id:
+        try:
+            if len(str(salesman_id)) == 24:
+                salesman_doc = await db.salesmen.find_one({"_id": ObjectId(salesman_id)}, {"name": 1})
+            else:
+                salesman_doc = await db.salesmen.find_one({"_id": salesman_id}, {"name": 1})
+            if salesman_doc:
+                salesman_name = salesman_doc.get('name', salesman_name)
+        except Exception as e:
+            logging.error(f"Error fetching salesman name: {e}")
+    
+    # Ensure product names are populated
+    for product in products:
+        if not product.get('product_name'):
+            product_id = product.get('product_id')
+            if product_id:
+                try:
+                    if len(str(product_id)) == 24:
+                        product_doc = await db.products.find_one({"_id": ObjectId(product_id)}, {"name": 1})
+                    else:
+                        product_doc = await db.products.find_one({"_id": product_id}, {"name": 1})
+                    if product_doc:
+                        product['product_name'] = product_doc.get('name', 'Unknown Product')
+                except Exception as e:
+                    logging.error(f"Error fetching product name: {e}")
+                    product['product_name'] = 'Unknown Product'
 
     product_rows = ""
     for p in products:
+        discount_pct = p.get('discount_pct', 0)
+        discounted_price = p.get('discounted_price', p.get('price', 0))
         product_rows += f"""
         <tr>
-            <td>{p.get('product_name', '')}</td>
-            <td>{p.get('quantity', '')}</td>
-            <td>{p.get('price', '')}</td>
-            <td>{p.get('discount_pct', '')}%</td>
-            <td>{p.get('discounted_price', '')}</td>
+            <td>{p.get('product_name', 'Unknown Product')}</td>
+            <td>{p.get('quantity', 0)}</td>
+            <td>₹{p.get('price', 0):,.2f}</td>
+            <td>{discount_pct}%</td>
+            <td>₹{discounted_price:,.2f}</td>
         </tr>
         """
 
+    # Create approval links that redirect through login - adjust the domain as needed
+    base_url = "http://localhost:3000"  # Update this to your actual domain
+    admin_orders_link = f"{base_url}/admin/orders"
+    discount_approval_link = f"{base_url}/admin/discount-approvals"
+    login_link = f"{base_url}/login"
+    
     html = f"""
     <html>
-    <body style="font-family: Arial, sans-serif;">
-        <h2 style="color:#2E86C1;">New Order Registered</h2>
-        <p><b>Order Code:</b> {order_code}</p>
-        <p><b>Dealer:</b> {dealer}</p>
-        <p><b>Salesman:</b> {salesman}</p>
-        <p><b>Status:</b> {status}</p>
-        <p><b>Total Price:</b> ₹{total:,.2f}</p>
-        <p><b>Discounted Total:</b> ₹{discounted_total:,.2f} ({discount:.2f}%)</p>
-        <h3>Products</h3>
-        <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
-            <tr style="background-color:#D6EAF8;">
-                <th>Product</th>
-                <th>Quantity</th>
-                <th>Base Price</th>
-                <th>Discount %</th>
-                <th>Discounted Price</th>
-            </tr>
-            {product_rows}
-        </table>
+    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+        <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+            <h2 style="color:#E67E22; border-bottom: 2px solid #E67E22; padding-bottom: 10px;">⚡ Order Requires Approval</h2>
+            
+            <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                <p><b>📋 Order Code:</b> <span style="color: #E67E22; font-weight: bold;">{order_code}</span></p>
+                <p><b>🏢 Dealer:</b> {dealer_name}</p>
+                <p><b>👤 Salesman:</b> {salesman_name}</p>
+                <p><b>📍 State:</b> {state}</p>
+                <p><b>📊 Status:</b> <span style="color: #E67E22; font-weight: bold;">{status.upper()}</span></p>
+            </div>
+            
+            <div style="background-color: #e8f5e8; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                <p><b>💰 Total Price:</b> ₹{total:,.2f}</p>
+                <p><b>🎯 Discounted Total:</b> ₹{discounted_total:,.2f}</p>
+                <p><b>💸 Discount:</b> {discount:.1f}%</p>
+            </div>
+            
+            <h3 style="color: #2E86C1;">📦 Products Ordered</h3>
+            <table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse; width: 100%; margin: 10px 0;">
+                <tr style="background-color:#D6EAF8; font-weight: bold;">
+                    <th style="text-align: left;">Product Name</th>
+                    <th style="text-align: center;">Qty</th>
+                    <th style="text-align: right;">Base Price</th>
+                    <th style="text-align: center;">Discount</th>
+                    <th style="text-align: right;">Final Price</th>
+                </tr>
+                {product_rows}
+            </table>
+            
+            <div style="text-align: center; margin: 30px 0; padding: 20px; background-color: #fff3cd; border-radius: 5px;">
+                <h3 style="color: #856404; margin-bottom: 15px;">⚡ Action Required</h3>
+                <p style="margin-bottom: 15px;">Please review and approve this order in the admin panel.</p>
+                <p style="font-size: 12px; color: #856404; margin-bottom: 20px;">
+                    <em>Note: Director/Admin access required. Sales Managers should use their manager dashboard.</em>
+                </p>
+                <div style="margin: 15px 0;">
+                    <a href="{admin_orders_link}" 
+                       style="display: inline-block; padding: 12px 25px; background-color: #2E86C1; color: white; 
+                              text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 14px; margin: 5px;">
+                        � View All Orders
+                    </a>
+                    <a href="{discount_approval_link}" 
+                       style="display: inline-block; padding: 12px 25px; background-color: #E67E22; color: white; 
+                              text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 14px; margin: 5px;">
+                        💰 Approve Discounts
+                    </a>
+                </div>
+            </div>
+            
+            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; font-size: 12px; color: #666;">
+                <p><b>Order ID:</b> {order_id}</p>
+                <p><b>Timestamp:</b> {order.get('created_at', 'N/A')}</p>
+            </div>
+        </div>
     </body>
     </html>
     """
@@ -437,9 +525,146 @@ def send_email_to_boss(subject: str, order: dict):
             server.starttls()
             server.login(EMAIL_USER, EMAIL_PASS)
             server.send_message(msg)
+        logging.info("Email sent to boss successfully.")
         print("Email sent to boss.")
     except Exception as e:
+        logging.error(f"Failed to send email: {e}")
         print(f"Failed to send email: {e}")
+
+async def send_order_confirmation_email(subject: str, order: dict, db: AsyncIOMotorDatabase):
+    msg = EmailMessage()
+    msg['Subject'] = subject
+    msg['From'] = EMAIL_USER
+    msg['To'] = BOSS_EMAIL
+
+    # Build HTML content for order confirmation (no approval needed)
+    order_code = order.get('order_code', '')
+    order_id = str(order.get('_id', ''))
+    total = order.get('total_price', 0)
+    discounted_total = order.get('discounted_total', 0)
+    discount = order.get('discount', 0)
+    status = order.get('status', '')
+    state = order.get('state', '')
+    products = order.get('products', [])
+    
+    # Fetch dealer name
+    dealer_name = "Unknown Dealer"
+    dealer_id = order.get('dealer_id')
+    if dealer_id:
+        try:
+            if len(str(dealer_id)) == 24:
+                dealer_doc = await db.dealers.find_one({"_id": ObjectId(dealer_id)}, {"name": 1})
+            else:
+                dealer_doc = await db.dealers.find_one({"_id": dealer_id}, {"name": 1})
+            if dealer_doc:
+                dealer_name = dealer_doc.get('name', dealer_name)
+        except Exception as e:
+            logging.error(f"Error fetching dealer name: {e}")
+    
+    # Fetch salesman name
+    salesman_name = "Unknown Salesman"
+    salesman_id = order.get('salesman_id')
+    if salesman_id:
+        try:
+            if len(str(salesman_id)) == 24:
+                salesman_doc = await db.salesmen.find_one({"_id": ObjectId(salesman_id)}, {"name": 1})
+            else:
+                salesman_doc = await db.salesmen.find_one({"_id": salesman_id}, {"name": 1})
+            if salesman_doc:
+                salesman_name = salesman_doc.get('name', salesman_name)
+        except Exception as e:
+            logging.error(f"Error fetching salesman name: {e}")
+    
+    # Ensure product names are populated
+    for product in products:
+        if not product.get('product_name'):
+            product_id = product.get('product_id')
+            if product_id:
+                try:
+                    if len(str(product_id)) == 24:
+                        product_doc = await db.products.find_one({"_id": ObjectId(product_id)}, {"name": 1})
+                    else:
+                        product_doc = await db.products.find_one({"_id": product_id}, {"name": 1})
+                    if product_doc:
+                        product['product_name'] = product_doc.get('name', 'Unknown Product')
+                except Exception as e:
+                    logging.error(f"Error fetching product name: {e}")
+                    product['product_name'] = 'Unknown Product'
+
+    product_rows = ""
+    for p in products:
+        discount_pct = p.get('discount_pct', 0)
+        discounted_price = p.get('discounted_price', p.get('price', 0))
+        product_rows += f"""
+        <tr>
+            <td>{p.get('product_name', 'Unknown Product')}</td>
+            <td>{p.get('quantity', 0)}</td>
+            <td>₹{p.get('price', 0):,.2f}</td>
+            <td>₹{discounted_price:,.2f}</td>
+        </tr>
+        """
+    
+    html = f"""
+    <html>
+    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+        <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+            <h2 style="color:#27AE60; border-bottom: 2px solid #27AE60; padding-bottom: 10px;">✅ Order Confirmed</h2>
+            
+            <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                <p><b>📋 Order Code:</b> <span style="color: #27AE60; font-weight: bold;">{order_code}</span></p>
+                <p><b>🏢 Dealer:</b> {dealer_name}</p>
+                <p><b>👤 Salesman:</b> {salesman_name}</p>
+                <p><b>📍 State:</b> {state}</p>
+                <p><b>📊 Status:</b> <span style="color: #27AE60; font-weight: bold;">{status.upper()}</span></p>
+            </div>
+            
+            <div style="background-color: #e8f5e8; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                <p><b>💰 Total Price:</b> ₹{total:,.2f}</p>
+            </div>
+            
+            <h3 style="color: #27AE60;">📦 Products Ordered</h3>
+            <table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse; width: 100%; margin: 10px 0;">
+                <tr style="background-color:#D5DBDB; font-weight: bold;">
+                    <th style="text-align: left;">Product Name</th>
+                    <th style="text-align: center;">Qty</th>
+                    <th style="text-align: right;">Price</th>
+                    <th style="text-align: right;">Final Price</th>
+                </tr>
+                {product_rows}
+            </table>
+            
+            <div style="text-align: center; margin: 30px 0; padding: 20px; background-color: #d4edda; border-radius: 5px;">
+                <h3 style="color: #155724; margin-bottom: 15px;">📋 Order Information</h3>
+                <p style="margin-bottom: 15px; color: #155724;">
+                    This order has been successfully placed and is being processed.
+                </p>
+                <p style="font-size: 12px; color: #155724;">
+                    <em>No approval required - Standard pricing applied.</em>
+                </p>
+            </div>
+            
+            <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; font-size: 12px; color: #666;">
+                <p><b>Order ID:</b> {order_id}</p>
+                <p><b>Timestamp:</b> {order.get('created_at', 'N/A')}</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+    msg.set_content("A new order has been registered. Please view in HTML format for details.")
+    msg.add_alternative(html, subtype='html')
+
+    try:
+        with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
+            server.starttls()
+            server.login(EMAIL_USER, EMAIL_PASS)
+            server.send_message(msg)
+        logging.info("Order confirmation email sent successfully.")
+        print("Order confirmation email sent.")
+    except Exception as e:
+        logging.error(f"Failed to send order confirmation email: {e}")
+        print(f"Failed to send order confirmation email: {e}")
 
 # Create an order document with order validation middleware
 @router.post("/make-order", response_model=OrderInDB)
@@ -516,28 +741,43 @@ async def create_order(
         order_dict.setdefault("status", "pending")
         # --- ORDER CODE LOGIC (FIXED) ---
         try:
-            state_raw = (order_dict.get("state") or "").strip().upper() or "NA"
+            state_raw = (order_dict.get("state") or "").strip().lower() or "na"
+            logging.info(f"DEBUG: Generating order code for state: {state_raw}")
+            
             # Determine fiscal year (Apr 1 - Mar 31)
             if now.month < 4:
                 start_year = now.year - 1
             else:
                 start_year = now.year
-            start_year_short = str(start_year)[-2:]
-            end_year_short = str(start_year + 1)[-2:]
-            fiscal_year_str = f"{start_year_short}-{end_year_short}"  # e.g. 24-25
-            # Atomic counter per FY+state. First visible code should end 1000.
+            end_year = start_year + 1
+            fiscal_year_str = f"fy{start_year}-{str(end_year)[-2:]}"  # e.g. fy2025-26
+            logging.info(f"DEBUG: Fiscal year: {fiscal_year_str}")
+            
+            # Atomic counter per FY+state. Sequence goes from 0000 to 9999
+            logging.info(f"DEBUG: Updating counter for fiscal_year={fiscal_year_str}, state={state_raw}")
             counter_doc = await db.order_counters.find_one_and_update(
                 {"fiscal_year": fiscal_year_str, "state": state_raw},
-                {"$inc": {"seq": 1}, "$setOnInsert": {"seq": 0}},
+                {"$inc": {"seq": 1}},
                 upsert=True,
                 return_document=ReturnDocument.AFTER
             )
-            seq_val = counter_doc.get("seq", 0)
-            # seq_val starts at 1 for first order -> produce 1000
-            code_tail = f"1{seq_val-1:03d}" if seq_val > 0 else "1000"
-            order_dict["order_code"] = f"nxg-{fiscal_year_str}-{state_raw}-{code_tail}"
+            logging.info(f"DEBUG: Counter doc result: {counter_doc}")
+            
+            seq_val = counter_doc.get("seq", 1)
+            # seq_val starts at 1 for first order -> produce 0000, then 0001, 0002, etc.
+            code_tail = f"{seq_val-1:04d}"  # 4-digit zero-padded starting from 0000
+            order_code = f"nxg-{fiscal_year_str}-{state_raw}-{code_tail}"
+            order_dict["order_code"] = order_code
+            logging.info(f"DEBUG: Generated order code: {order_code}")
         except Exception as gen_ex:
             logging.error(f"Order code generation failed: {gen_ex}")
+            import traceback
+            logging.error(f"Full traceback: {traceback.format_exc()}")
+            # Fail order creation if order_code cannot be generated to ensure data integrity
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Failed to generate order code due to database connectivity issues. Please try again later."
+            )
         # --- END ORDER CODE LOGIC ---
         # Ensure '_id' is not set for new orders
         order_dict.pop("_id", None)
@@ -547,8 +787,15 @@ async def create_order(
         order_dict["_id"] = result.inserted_id
 
         # Send email to boss after successful order registration
-        subject = f"New Order Registered: {order_dict.get('order_code', '')}"
-        send_email_to_boss(subject, order_dict)
+        order_code = order_dict.get('order_code', '')
+        if any_discount:
+            # Send approval email if there are discounts
+            subject = f"New Order Requires Approval: {order_code}"
+            await send_email_to_boss(subject, order_dict, db)
+        else:
+            # Send confirmation email if no discounts
+            subject = f"Order Confirmed: {order_code}"
+            await send_order_confirmation_email(subject, order_dict, db)
 
         return order_dict
     except RequestValidationError as e:
