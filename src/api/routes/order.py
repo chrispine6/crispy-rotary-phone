@@ -22,8 +22,10 @@ from api.middleware.admin_check import admin_check
 from pymongo import ReturnDocument
 
 import smtplib
+import asyncio
+import threading
 from email.message import EmailMessage
-from config.settings import EMAIL_HOST, EMAIL_PORT, EMAIL_USER, EMAIL_PASS, BOSS_EMAIL
+from config.settings import EMAIL_HOST, EMAIL_PORT, EMAIL_USER, EMAIL_PASS, BOSS_EMAIL, EMAIL_ENABLED
 
 router = APIRouter(tags=["orders"])
 
@@ -376,70 +378,94 @@ async def get_product_packing_by_name(
     logging.info(f"Products packing info: {products}")
     return products
 
-def send_email_to_boss(subject: str, order: dict):
-    msg = EmailMessage()
-    msg['Subject'] = subject
-    msg['From'] = EMAIL_USER
-    msg['To'] = BOSS_EMAIL
+def send_email_to_boss_sync(subject: str, order: dict):
+    """Synchronous email sending function - runs in background thread"""
+    try:
+        msg = EmailMessage()
+        msg['Subject'] = subject
+        msg['From'] = EMAIL_USER
+        msg['To'] = BOSS_EMAIL
 
-    # Build HTML content
-    order_code = order.get('order_code', '')
-    dealer = order.get('dealer_name', order.get('dealer_id', ''))
-    salesman = order.get('salesman_name', order.get('salesman_id', ''))
-    total = order.get('total_price', 0)
-    discounted_total = order.get('discounted_total', 0)
-    discount = order.get('discount', 0)
-    status = order.get('status', '')
-    products = order.get('products', [])
+        # Build HTML content
+        order_code = order.get('order_code', '')
+        dealer = order.get('dealer_name', order.get('dealer_id', ''))
+        salesman = order.get('salesman_name', order.get('salesman_id', ''))
+        total = order.get('total_price', 0)
+        discounted_total = order.get('discounted_total', 0)
+        discount = order.get('discount', 0)
+        status = order.get('status', '')
+        products = order.get('products', [])
 
-    product_rows = ""
-    for p in products:
-        product_rows += f"""
-        <tr>
-            <td>{p.get('product_name', '')}</td>
-            <td>{p.get('quantity', '')}</td>
-            <td>{p.get('price', '')}</td>
-            <td>{p.get('discount_pct', '')}%</td>
-            <td>{p.get('discounted_price', '')}</td>
-        </tr>
+        product_rows = ""
+        for p in products:
+            product_rows += f"""
+            <tr>
+                <td>{p.get('product_name', '')}</td>
+                <td>{p.get('quantity', '')}</td>
+                <td>{p.get('price', '')}</td>
+                <td>{p.get('discount_pct', '')}%</td>
+                <td>{p.get('discounted_price', '')}</td>
+            </tr>
+            """
+
+        html = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif;">
+            <h2 style="color:#2E86C1;">New Order Registered</h2>
+            <p><b>Order Code:</b> {order_code}</p>
+            <p><b>Dealer:</b> {dealer}</p>
+            <p><b>Salesman:</b> {salesman}</p>
+            <p><b>Status:</b> {status}</p>
+            <p><b>Total Price:</b> ₹{total:,.2f}</p>
+            <p><b>Discounted Total:</b> ₹{discounted_total:,.2f} ({discount:.2f}%)</p>
+            <h3>Products</h3>
+            <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
+                <tr style="background-color:#D6EAF8;">
+                    <th>Product</th>
+                    <th>Quantity</th>
+                    <th>Base Price</th>
+                    <th>Discount %</th>
+                    <th>Discounted Price</th>
+                </tr>
+                {product_rows}
+            </table>
+        </body>
+        </html>
         """
 
-    html = f"""
-    <html>
-    <body style="font-family: Arial, sans-serif;">
-        <h2 style="color:#2E86C1;">New Order Registered</h2>
-        <p><b>Order Code:</b> {order_code}</p>
-        <p><b>Dealer:</b> {dealer}</p>
-        <p><b>Salesman:</b> {salesman}</p>
-        <p><b>Status:</b> {status}</p>
-        <p><b>Total Price:</b> ₹{total:,.2f}</p>
-        <p><b>Discounted Total:</b> ₹{discounted_total:,.2f} ({discount:.2f}%)</p>
-        <h3>Products</h3>
-        <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
-            <tr style="background-color:#D6EAF8;">
-                <th>Product</th>
-                <th>Quantity</th>
-                <th>Base Price</th>
-                <th>Discount %</th>
-                <th>Discounted Price</th>
-            </tr>
-            {product_rows}
-        </table>
-    </body>
-    </html>
-    """
+        msg.set_content("A new order has been registered. Please view in HTML format for details.")
+        msg.add_alternative(html, subtype='html')
 
-    msg.set_content("A new order has been registered. Please view in HTML format for details.")
-    msg.add_alternative(html, subtype='html')
-
-    try:
-        with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
+        # Set a timeout for SMTP operations
+        with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT, timeout=10) as server:
             server.starttls()
             server.login(EMAIL_USER, EMAIL_PASS)
             server.send_message(msg)
-        print("Email sent to boss.")
+        
+        logging.info(f"Email sent successfully for order: {order_code}")
+        
     except Exception as e:
-        print(f"Failed to send email: {e}")
+        logging.error(f"Failed to send email for order {order.get('order_code', 'Unknown')}: {str(e)}")
+        # Don't re-raise the exception - just log it
+
+def send_email_to_boss(subject: str, order: dict):
+    """Non-blocking email sending - runs in background thread"""
+    if not EMAIL_ENABLED:
+        logging.info(f"Email sending disabled - skipping notification for order: {order.get('order_code', 'Unknown')}")
+        return
+        
+    try:
+        # Run email sending in a separate thread to avoid blocking the request
+        thread = threading.Thread(
+            target=send_email_to_boss_sync, 
+            args=(subject, order),
+            daemon=True  # Daemon thread won't prevent app shutdown
+        )
+        thread.start()
+        logging.info(f"Email sending started in background for order: {order.get('order_code', 'Unknown')}")
+    except Exception as e:
+        logging.error(f"Failed to start email thread: {str(e)}")
+        # Don't re-raise - just log the error
 
 # Create an order document with order validation middleware
 @router.post("/make-order", response_model=OrderInDB)
@@ -546,9 +572,13 @@ async def create_order(
             raise HTTPException(status_code=500, detail="Order creation failed")
         order_dict["_id"] = result.inserted_id
 
-        # Send email to boss after successful order registration
-        subject = f"New Order Registered: {order_dict.get('order_code', '')}"
-        send_email_to_boss(subject, order_dict)
+        # Send email to boss after successful order registration (non-blocking)
+        try:
+            subject = f"New Order Registered: {order_dict.get('order_code', '')}"
+            send_email_to_boss(subject, order_dict)
+        except Exception as email_error:
+            # Log email error but don't let it affect the order creation
+            logging.error(f"Email notification failed for order {order_dict.get('order_code', 'Unknown')}: {str(email_error)}")
 
         return order_dict
     except RequestValidationError as e:
@@ -1419,6 +1449,15 @@ async def get_me(
             doc = await db.directors.find_one({"email": {"$regex": pattern, "$options": "i"}})
             if doc:
                 logging.info(f"DEBUG: Found director by email: {doc}")
+                # Auto-link Firebase UID if email matched but firebase_uid is not set
+                if not doc.get("firebase_uid") and uid:
+                    logging.info(f"DEBUG: Director email matched but firebase_uid not set; auto-linking UID {uid}")
+                    await db.directors.update_one(
+                        {"_id": doc["_id"]}, 
+                        {"$set": {"firebase_uid": uid}}
+                    )
+                    doc["firebase_uid"] = uid  # Update local doc object
+                    logging.info(f"DEBUG: Successfully linked Firebase UID {uid} to director {email}")
                 out = clean_object_ids(doc)
                 out["role"] = "director"
                 out["is_admin"] = False
@@ -1433,9 +1472,17 @@ async def get_me(
             pattern = f"^{re.escape(email)}$"
             doc = await db.salesmen.find_one({"email": {"$regex": pattern, "$options": "i"}})
             logging.info(f"DEBUG: Found salesman by email: {doc}")
-            # Block login if firebase_uid is not set
-            if doc and not doc.get("firebase_uid"):
-                logging.info("DEBUG: Email matched but firebase_uid not set; blocking login.")
+            # Auto-link Firebase UID if email matched but firebase_uid is not set
+            if doc and not doc.get("firebase_uid") and uid:
+                logging.info(f"DEBUG: Email matched but firebase_uid not set; auto-linking UID {uid}")
+                await db.salesmen.update_one(
+                    {"_id": doc["_id"]}, 
+                    {"$set": {"firebase_uid": uid}}
+                )
+                doc["firebase_uid"] = uid  # Update local doc object
+                logging.info(f"DEBUG: Successfully linked Firebase UID {uid} to user {email}")
+            elif doc and not doc.get("firebase_uid") and not uid:
+                logging.info("DEBUG: Email matched but firebase_uid not set and no uid provided; blocking login.")
                 return {"role": "guest", "error": "firebase_uid not set for this user"}
         if not doc:
             logging.info("DEBUG: No doc found, returning guest")

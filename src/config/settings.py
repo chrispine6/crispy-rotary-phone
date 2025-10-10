@@ -14,3 +14,6 @@ EMAIL_PORT=587
 EMAIL_USER="fayaqueisawesome@gmail.com"
 EMAIL_PASS="qdazoxehaszonoyu"
 BOSS_EMAIL="fayaque.ali22@gmail.com"
+
+# Email configuration - set to False to disable email sending
+EMAIL_ENABLED = os.getenv("EMAIL_ENABLED", "true").lower() == "true"
