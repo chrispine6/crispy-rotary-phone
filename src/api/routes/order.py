@@ -378,73 +378,173 @@ async def get_product_packing_by_name(
     logging.info(f"Products packing info: {products}")
     return products
 
-def send_email_to_boss(subject: str, order: dict):
+async def send_email_to_boss(subject: str, order: dict, db: AsyncIOMotorDatabase):
+    # Check if email is enabled
+    if not EMAIL_ENABLED:
+        logging.info(f"Email sending disabled - skipping notification for order: {order.get('order_code', 'Unknown')}")
+        return
+        
     msg = EmailMessage()
     msg['Subject'] = subject
     msg['From'] = EMAIL_USER
     msg['To'] = BOSS_EMAIL
 
-    # Build HTML content
+    # Build HTML content with enhanced formatting
     order_code = order.get('order_code', '')
-    dealer = order.get('dealer_name', order.get('dealer_id', ''))
-    salesman = order.get('salesman_name', order.get('salesman_id', ''))
+    order_id = str(order.get('_id', ''))
     total = order.get('total_price', 0)
     discounted_total = order.get('discounted_total', 0)
     discount = order.get('discount', 0)
     status = order.get('status', '')
+    state = order.get('state', '')
     products = order.get('products', [])
+    
+    # Fetch dealer name
+    dealer_name = "Unknown Dealer"
+    dealer_id = order.get('dealer_id')
+    if dealer_id:
+        try:
+            if len(str(dealer_id)) == 24:
+                dealer_doc = await db.dealers.find_one({"_id": ObjectId(dealer_id)})
+            else:
+                dealer_doc = await db.dealers.find_one({"_id": dealer_id})
+            if dealer_doc:
+                dealer_name = dealer_doc.get('name', 'Unknown Dealer')
+        except Exception as e:
+            logging.error(f"Error fetching dealer name: {e}")
+    
+    # Fetch salesman name
+    salesman_name = "Unknown Salesman"
+    salesman_id = order.get('salesman_id')
+    if salesman_id:
+        try:
+            if len(str(salesman_id)) == 24:
+                salesman_doc = await db.salesmen.find_one({"_id": ObjectId(salesman_id)})
+            else:
+                salesman_doc = await db.salesmen.find_one({"_id": salesman_id})
+            if salesman_doc:
+                salesman_name = salesman_doc.get('name', 'Unknown Salesman')
+        except Exception as e:
+            logging.error(f"Error fetching salesman name: {e}")
 
     product_rows = ""
     for p in products:
         product_rows += f"""
         <tr>
-            <td>{p.get('product_name', '')}</td>
-            <td>{p.get('quantity', '')}</td>
-            <td>{p.get('price', '')}</td>
-            <td>{p.get('discount_pct', '')}%</td>
-            <td>{p.get('discounted_price', '')}</td>
+            <td style="padding: 8px; border: 1px solid #ddd;">{p.get('product_name', '')}</td>
+            <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">{p.get('quantity', '')}</td>
+            <td style="padding: 8px; border: 1px solid #ddd; text-align: right;">₹{p.get('price', 0):,.2f}</td>
+            <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">{p.get('discount_pct', 0)}%</td>
+            <td style="padding: 8px; border: 1px solid #ddd; text-align: right;">₹{p.get('discounted_price', 0):,.2f}</td>
         </tr>
         """
 
+    # Create approval link
+    approval_link = f"https://nexgrow-server-nu.vercel.app/admin/orders"
+
     html = f"""
     <html>
-    <body style="font-family: Arial, sans-serif;">
-        <h2 style="color:#2E86C1;">New Order Registered</h2>
-        <p><b>Order Code:</b> {order_code}</p>
-        <p><b>Dealer:</b> {dealer}</p>
-        <p><b>Salesman:</b> {salesman}</p>
-        <p><b>Status:</b> {status}</p>
-        <p><b>Total Price:</b> ₹{total:,.2f}</p>
-        <p><b>Discounted Total:</b> ₹{discounted_total:,.2f} ({discount:.2f}%)</p>
-        <h3>Products</h3>
-        <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
-            <tr style="background-color:#D6EAF8;">
-                <th>Product</th>
-                <th>Quantity</th>
-                <th>Base Price</th>
-                <th>Discount %</th>
-                <th>Discounted Price</th>
-            </tr>
-            {product_rows}
-        </table>
+    <head>
+        <style>
+            body {{ font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }}
+            .container {{ max-width: 800px; margin: 0 auto; background-color: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+            .header {{ background: linear-gradient(135deg, #16a34a, #15803d); color: white; padding: 20px; border-radius: 8px; margin-bottom: 25px; }}
+            .header h2 {{ margin: 0; font-size: 24px; }}
+            .order-info {{ background-color: #f8f9fa; padding: 20px; border-radius: 6px; margin-bottom: 20px; }}
+            .order-info p {{ margin: 8px 0; font-size: 16px; }}
+            .label {{ font-weight: bold; color: #333; }}
+            .value {{ color: #666; }}
+            .products-table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
+            .products-table th {{ background-color: #16a34a; color: white; padding: 12px; text-align: left; }}
+            .products-table td {{ padding: 8px; border: 1px solid #ddd; }}
+            .products-table tr:nth-child(even) {{ background-color: #f9f9f9; }}
+            .approval-section {{ background-color: #e7f3ff; padding: 20px; border-radius: 6px; margin-top: 25px; text-align: center; }}
+            .approval-btn {{ display: inline-block; background-color: #16a34a; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; margin: 10px; }}
+            .approval-btn:hover {{ background-color: #15803d; }}
+            .footer {{ margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; font-size: 14px; color: #666; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h2>🛒 New Order Awaiting Approval</h2>
+            </div>
+            
+            <div class="order-info">
+                <p><span class="label">Order Code:</span> <span class="value">{order_code}</span></p>
+                <p><span class="label">Dealer:</span> <span class="value">{dealer_name}</span></p>
+                <p><span class="label">Salesman:</span> <span class="value">{salesman_name}</span></p>
+                <p><span class="label">State:</span> <span class="value">{state}</span></p>
+                <p><span class="label">Status:</span> <span class="value" style="color: #f59e0b; font-weight: bold;">{status}</span></p>
+                <p><span class="label">Total Price:</span> <span class="value">₹{total:,.2f}</span></p>
+                <p><span class="label">Discounted Total:</span> <span class="value" style="color: #16a34a; font-weight: bold;">₹{discounted_total:,.2f} ({discount:.1f}% discount)</span></p>
+            </div>
+
+            <h3 style="color: #333; margin-bottom: 15px;">📦 Order Details</h3>
+            <table class="products-table">
+                <thead>
+                    <tr>
+                        <th>Product</th>
+                        <th>Quantity</th>
+                        <th>Base Price</th>
+                        <th>Discount %</th>
+                        <th>Final Price</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {product_rows}
+                </tbody>
+            </table>
+
+            <div class="approval-section">
+                <h3 style="margin-top: 0; color: #333;">⚡ Quick Actions</h3>
+                <p style="margin-bottom: 20px;">Click below to review and approve this order:</p>
+                <a href="{approval_link}" class="approval-btn">🔍 Review & Approve Order</a>
+            </div>
+
+            <div class="footer">
+                <p>This is an automated notification from NexFarm Order Management System.</p>
+                <p>Order ID: {order_id}</p>
+            </div>
+        </div>
     </body>
     </html>
     """
 
-    try:
-        msg.set_content("A new order has been registered. Please view in HTML format for details.")
-        msg.add_alternative(html, subtype='html')
+    # Send email in a separate thread to avoid blocking
+    def send_email_sync():
+        try:
+            msg.set_content("A new order has been registered. Please view in HTML format for details.")
+            msg.add_alternative(html, subtype='html')
 
-        # Set a timeout for SMTP operations
-        with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT, timeout=10) as server:
-            server.starttls()
-            server.login(EMAIL_USER, EMAIL_PASS)
-            server.send_message(msg)
-        print("Email sent to boss.")
+            # Set a timeout for SMTP operations
+            with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT, timeout=10) as server:
+                server.starttls()
+                server.login(EMAIL_USER, EMAIL_PASS)
+                server.send_message(msg)
+            logging.info("Email sent to boss successfully.")
+        except OSError as e:
+            if "Network is unreachable" in str(e):
+                logging.error(f"Network error sending email - SMTP server unreachable: {e}")
+            else:
+                logging.error(f"Network/connection error sending email: {e}")
+        except Exception as e:
+            logging.error(f"Failed to send email: {e}")
+    
+    # Run email sending in background thread
+    try:
+        thread = threading.Thread(target=send_email_sync, daemon=True)
+        thread.start()
+        logging.info(f"Email sending started in background for order: {order_code}")
     except Exception as e:
-        print(f"Failed to send email: {e}")
+        logging.error(f"Failed to start email thread: {e}")
 
 async def send_order_confirmation_email(subject: str, order: dict, db: AsyncIOMotorDatabase):
+    # Check if email is enabled
+    if not EMAIL_ENABLED:
+        logging.info(f"Email sending disabled - skipping confirmation for order: {order.get('order_code', 'Unknown')}")
+        return
+        
     msg = EmailMessage()
     msg['Subject'] = subject
     msg['From'] = EMAIL_USER
@@ -699,9 +799,12 @@ async def create_order(
             raise HTTPException(status_code=500, detail="Order creation failed")
         order_dict["_id"] = result.inserted_id
 
-        # Send email to boss after successful order registration
+        # Send email to boss after successful order registration (non-blocking)
         subject = f"New Order Registered: {order_dict.get('order_code', '')}"
-        send_email_to_boss(subject, order_dict)
+        try:
+            await send_email_to_boss(subject, order_dict, db)
+        except Exception as e:
+            logging.error(f"Email sending failed but order was created successfully: {e}")
 
         return order_dict
     except RequestValidationError as e:
