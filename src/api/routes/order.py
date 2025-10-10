@@ -431,6 +431,7 @@ def send_email_to_boss(subject: str, order: dict):
     </html>
     """
 
+    try:
         msg.set_content("A new order has been registered. Please view in HTML format for details.")
         msg.add_alternative(html, subtype='html')
 
