@@ -11,9 +11,9 @@ MONGODB_URL = os.getenv(
 DB_NAME = "nexfarm_db"
 EMAIL_HOST="smtp.gmail.com"
 EMAIL_PORT=587
-EMAIL_USER="fayaqueisawesome@gmail.com"
-EMAIL_PASS="qdazoxehaszonoyu"
-BOSS_EMAIL="fayaque.ali22@gmail.com"
+EMAIL_USER="info@nex-farm.com"
+EMAIL_PASS="xhkb vzsk pbfw zpts"
+BOSS_EMAIL="accounts@nex-farm.com"
 
-# Email configuration - set to False to disable email sending
+
 EMAIL_ENABLED = os.getenv("EMAIL_ENABLED", "true").lower() == "true"
