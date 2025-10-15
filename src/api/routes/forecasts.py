@@ -60,9 +60,12 @@ async def create_or_update_forecast(
                     product_doc = None
             if not product_doc:
                 product_doc = await db.products.find_one({"_id": product.product_id})
-            
+
             product_name = product_doc.get("name", "") if product_doc else ""
-            
+            unit_cost = product_doc.get("dealer_price_per_bottle") if product_doc else None
+            quantity = product.quantity
+            total_cost = unit_cost * quantity if unit_cost is not None and quantity is not None else None
+
             # Get dealer name if dealer_id provided
             dealer_name = ""
             if product.dealer_id:
@@ -75,13 +78,15 @@ async def create_or_update_forecast(
                 if not dealer_doc:
                     dealer_doc = await db.dealers.find_one({"_id": product.dealer_id})
                 dealer_name = dealer_doc.get("name", "") if dealer_doc else ""
-            
+
             processed_products.append({
                 "product_id": product.product_id,
                 "product_name": product_name,
-                "quantity": product.quantity,
+                "quantity": quantity,
                 "dealer_id": product.dealer_id,
-                "dealer_name": dealer_name
+                "dealer_name": dealer_name,
+                "unit_cost": unit_cost,
+                "total_cost": total_cost
             })
         
         # Check if forecast already exists for this salesman/year/month

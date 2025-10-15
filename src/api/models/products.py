@@ -59,10 +59,11 @@ class ProductInDB(BaseModel):
             }
         }
 
-# Simple model for product response with only id and name
+# Simple model for product response with id, name and gst_percentage
 class ProductSimpleResponse(BaseModel):
     id: PyObjectId = Field(alias="_id")
     name: str
+    gst_percentage: float
 
     class Config:
         allow_population_by_field_name = True
@@ -70,7 +71,8 @@ class ProductSimpleResponse(BaseModel):
         schema_extra = {
             "example": {
                 "id": "60c72b2f9b1e8d001c8e4f3c",
-                "name": "Nexpro Nitro Plus"
+                "name": "Nexpro Nitro Plus",
+                "gst_percentage": 18.0
             }
         }
 

@@ -8,6 +8,8 @@ class ForecastProduct(BaseModel):
     quantity: float = Field(..., ge=0)
     dealer_id: Optional[str] = None
     dealer_name: Optional[str] = None
+    unit_cost: Optional[float] = None  # Cost per unit (bottle)
+    total_cost: Optional[float] = None  # quantity * unit_cost
 
 class ForecastInDB(BaseModel):
     salesman_id: str

@@ -44,20 +44,16 @@ def clean_object_ids(obj):
 # Helper to resolve current user as sales manager and fetch their team salesman ids
 async def _resolve_manager_team_ids(db: AsyncIOMotorDatabase, uid: str | None, email: str | None):
     try:
-        logging.info(f"DEBUG: _resolve_manager_team_ids called with uid={uid}, email={email}")
         # Find the salesmen doc for current user by uid/email
         user_doc = None
         if uid:
             user_doc = await db.salesmen.find_one({"firebase_uid": uid})
-            logging.info(f"DEBUG: Found user_doc by uid: {user_doc}")
         if not user_doc and email:
             import re
             pattern = f"^{re.escape(email)}$"
             user_doc = await db.salesmen.find_one({"email": {"$regex": pattern, "$options": "i"}})
-            logging.info(f"DEBUG: Found user_doc by email: {user_doc}")
 
         if not user_doc:
-            logging.info("DEBUG: No user_doc found, trying sales_managers lookup")
             # Try to resolve manager directly from sales_managers using email
             mgr_doc = None
             if email:
@@ -349,7 +345,7 @@ async def get_all_products(
     # For each unique name, get one document to fetch its _id (first occurrence)
     products = []
     for name in unique_names:
-        doc = await db.products.find_one({"name": name}, {"_id": 1, "name": 1})
+        doc = await db.products.find_one({"name": name}, {"_id": 1, "name": 1, "gst_percentage": 1})
         if doc:
             products.append(doc)
     
@@ -1083,9 +1079,54 @@ async def get_discount_approvals(
     """List all orders with pending discount approval."""
     orders_cursor = db.orders.find({"discount_status": "pending"})
     orders = await orders_cursor.to_list(length=1000)
-    # Clean ObjectId fields before returning
-    cleaned_orders = [clean_object_ids(order) for order in orders]
-    return cleaned_orders
+    
+    # Enrich orders with product GST information
+    enriched_orders = []
+    for order in orders:
+        # Normalize products and attach product names and GST percentages
+        products = order.get("products", [])
+        if not products and "product_id" in order and order["product_id"] is not None:
+            pid = str(order["product_id"])
+            product_entry = {
+                "product_id": pid,
+                "quantity": order.get("quantity"),
+                "price": order.get("price"),
+                "product_name": None
+            }
+            try:
+                product_doc = await db.products.find_one({"_id": ObjectId(pid)})
+                product_entry["product_name"] = product_doc["name"] if product_doc else ""
+                product_entry["gst_percentage"] = product_doc["gst_percentage"] if product_doc else 0
+            except Exception:
+                product_entry["product_name"] = ""
+                product_entry["gst_percentage"] = 0
+            products = [product_entry]
+            order.pop("product_id", None)
+            order.pop("quantity", None)
+            order.pop("price", None)
+            order.pop("product_name", None)
+        
+        for p in products:
+            pid = p.get("product_id")
+            pid_str = str(pid) if pid else ""
+            p["product_id"] = pid_str
+            product_doc = None
+            if not p.get("product_name"):
+                if len(pid_str) == 24:
+                    try:
+                        product_doc = await db.products.find_one({"_id": ObjectId(pid_str)}, {"name": 1, "gst_percentage": 1})
+                    except Exception:
+                        product_doc = None
+                if not product_doc:
+                    product_doc = await db.products.find_one({"_id": pid_str}, {"name": 1, "gst_percentage": 1})
+                p["product_name"] = product_doc["name"] if product_doc and "name" in product_doc else ""
+                p["gst_percentage"] = product_doc["gst_percentage"] if product_doc and "gst_percentage" in product_doc else 0
+        
+        order["products"] = products
+        # Clean ObjectId fields before returning
+        enriched_orders.append(clean_object_ids(order))
+    
+    return enriched_orders
 
 @router.post("/admin/approve-discount/{order_id}")
 async def approve_discount(
@@ -1615,8 +1656,10 @@ async def list_my_orders(
                 try:
                     product_doc = await db.products.find_one({"_id": ObjectId(pid)})
                     product_entry["product_name"] = product_doc["name"] if product_doc else ""
+                    product_entry["gst_percentage"] = product_doc["gst_percentage"] if product_doc else 0
                 except Exception:
                     product_entry["product_name"] = ""
+                    product_entry["gst_percentage"] = 0
                 products = [product_entry]
                 order.pop("product_id", None)
                 order.pop("quantity", None)
@@ -1630,12 +1673,13 @@ async def list_my_orders(
                 if not p.get("product_name"):
                     if len(pid_str) == 24:
                         try:
-                            product_doc = await db.products.find_one({"_id": ObjectId(pid_str)}, {"name": 1})
+                            product_doc = await db.products.find_one({"_id": ObjectId(pid_str)}, {"name": 1, "gst_percentage": 1})
                         except Exception:
                             product_doc = None
                     if not product_doc:
-                        product_doc = await db.products.find_one({"_id": pid_str}, {"name": 1})
+                        product_doc = await db.products.find_one({"_id": pid_str}, {"name": 1, "gst_percentage": 1})
                     p["product_name"] = product_doc["name"] if product_doc and "name" in product_doc else ""
+                    p["gst_percentage"] = product_doc["gst_percentage"] if product_doc and "gst_percentage" in product_doc else 0
             order["products"] = products
 
             # Clean any remaining ObjectId fields
@@ -1658,6 +1702,12 @@ async def get_me(
 ):
     try:
         logging.info(f"DEBUG: /me called with uid={uid}, email={email}")
+        
+        # Require both uid and email for security
+        if not email:
+            logging.warning("DEBUG: No email provided - denying access")
+            raise HTTPException(status_code=400, detail="Email is required for authentication")
+            
         doc = None
         # 1. Try to find director by firebase_uid
         if uid:
@@ -1711,8 +1761,8 @@ async def get_me(
                 logging.info("DEBUG: Email matched but firebase_uid not set and no uid provided; blocking login.")
                 return {"role": "guest", "error": "firebase_uid not set for this user"}
         if not doc:
-            logging.info("DEBUG: No doc found, returning guest")
-            return {"role": "guest"}
+            logging.info(f"DEBUG: No user found with email {email} - denying access")
+            raise HTTPException(status_code=403, detail="Access denied. Email not authorized for this system.")
         role = doc.get("role")
         if role not in ("admin", "sales_manager", "salesman"):
             role = "admin" if doc.get("admin") else "salesman"
