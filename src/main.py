@@ -28,7 +28,16 @@ app = FastAPI(title="nexfarm", description="nexfarm server", version="0.1.0")
 allowed_origins = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 if allowed_origins == ["*"]:
     # Development mode - allow all origins
-    origins = ["*"]
+    origins = [
+        "http://localhost:3000",
+        "http://localhost:8080",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:8080",
+        "https://nex-grow.co.in",
+        "https://www.nex-grow.co.in",
+        "https://api.nex-grow.co.in",
+        "*"
+    ]
 else:
     # Production mode - use specific origins
     origins = [origin.strip() for origin in allowed_origins]

@@ -51,7 +51,7 @@ cat > .env << EOF
 MONGODB_URL=mongodb+srv://nexfarm_admin:sgFeiUpVjWwuv84W@cluster0.aicbbge.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0
 DB_NAME=nexfarm_db
 PYTHONPATH=/var/www/crispy-rotary-phone/src
-ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,https://friendly-meme-green.vercel.app
+ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,https://oyster-app-btoc9.ondigitalocean.app/login
 PORT=8000
 ENVIRONMENT=production
 EOF
