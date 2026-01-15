@@ -2014,8 +2014,38 @@ async def admin_clear_firebase_uids(
             res2 = await db.directors.update_many({}, {"$unset": {"firebase_uid": ""}})
         except Exception:
             res2 = type("x", (), {"matched_count": 0, "modified_count": 0})()
-        return {"matched_salesmen": res1.matched_count, "modified_salesmen": res1.modified_count, "matched_directors": getattr(res2, 'matched_count', 0), "modified_directors": getattr(res2, 'modified_count', 0)}
+        try:
+            res3 = await db.sales_managers.update_many({}, {"$unset": {"firebase_uid": ""}})
+        except Exception:
+            res3 = type("x", (), {"matched_count": 0, "modified_count": 0})()
+        return {
+            "matched_salesmen": res1.matched_count, 
+            "modified_salesmen": res1.modified_count, 
+            "matched_directors": getattr(res2, 'matched_count', 0), 
+            "modified_directors": getattr(res2, 'modified_count', 0),
+            "matched_sales_managers": getattr(res3, 'matched_count', 0),
+            "modified_sales_managers": getattr(res3, 'modified_count', 0)
+        }
     except Exception as e:
         logging.error(f"Error clearing firebase_uids: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+# Admin utility: clear all orders
+@router.post("/admin/clear-all-orders")
+async def admin_clear_all_orders(
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    user=Depends(admin_check)
+):
+    """Delete all orders from the database. USE WITH CAUTION!"""
+    try:
+        result = await db.orders.delete_many({})
+        logging.info(f"Deleted {result.deleted_count} orders")
+        return {
+            "success": True,
+            "deleted_count": result.deleted_count,
+            "message": f"Successfully deleted {result.deleted_count} orders"
+        }
+    except Exception as e:
+        logging.error(f"Error clearing orders: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
