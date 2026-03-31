@@ -144,8 +144,10 @@ ENV/
 env.bak/
 venv.bak/
 
-# Firebase service account key - NEVER commit this
+# Firebase service account keys - NEVER commit these
 firebase-service-account.json
+*firebase-adminsdk*.json
+*service-account*.json
 *-service-account.json
 
 # Spyder project settings

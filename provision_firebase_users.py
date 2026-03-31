@@ -76,14 +76,18 @@ async def provision(password: str, dry_run: bool = False):
             # Check if Firebase account already exists
             try:
                 existing = fb_auth.get_user_by_email(email)
-                print(f"  SKIP  {email}  (already exists, uid={existing.uid})")
-                skipped.append(email)
-                # Link UID if missing in MongoDB
+                # Reset password so everyone has the same one
                 if not dry_run:
+                    fb_auth.update_user(existing.uid, password=password)
+                    print(f"  RESET {email}  (uid={existing.uid}, password updated)")
+                    # Link UID if missing in MongoDB
                     await db[col].update_one(
                         {"_id": doc_id, "firebase_uid": {"$exists": False}},
                         {"$set": {"firebase_uid": existing.uid}}
                     )
+                else:
+                    print(f"  DRY-RESET {email}  (already exists, would reset password)")
+                skipped.append(email)
                 continue
             except fb_auth.UserNotFoundError:
                 pass
