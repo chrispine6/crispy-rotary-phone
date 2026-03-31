@@ -2049,3 +2049,117 @@ async def admin_clear_all_orders(
         logging.error(f"Error clearing orders: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
+
+# Admin utility: provision Firebase Email/Password accounts for all MongoDB users
+@router.post("/admin/provision-firebase-users")
+async def provision_firebase_users(
+    payload: dict = Body(...),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    user=Depends(admin_check)
+):
+    """
+    One-time setup: Creates Firebase Email/Password accounts for every
+    salesman, sales_manager and director stored in MongoDB that doesn't
+    already have a firebase_uid.
+
+    Body: { "password": "<shared-password>" }
+
+    Returns a summary of created / skipped / failed accounts.
+    """
+    import re as _re
+    import traceback as _tb
+
+    password = (payload or {}).get("password", "").strip()
+    if not password or len(password) < 6:
+        raise HTTPException(status_code=400, detail="password must be at least 6 characters")
+
+    try:
+        import firebase_admin
+        from firebase_admin import auth as fb_auth, credentials as fb_cred
+    except ImportError:
+        raise HTTPException(
+            status_code=500,
+            detail="firebase-admin package is not installed. Run: pip install firebase-admin"
+        )
+
+    # Initialise Firebase Admin SDK (idempotent – won't re-init if already done)
+    try:
+        firebase_admin.get_app()
+    except ValueError:
+        # No app initialised yet – use Application Default Credentials or
+        # GOOGLE_APPLICATION_CREDENTIALS env variable pointing to the service-account JSON
+        try:
+            firebase_admin.initialize_app()
+        except Exception as init_err:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"Firebase Admin SDK could not be initialised: {init_err}. "
+                    "Set GOOGLE_APPLICATION_CREDENTIALS to the path of your service-account JSON file."
+                )
+            )
+
+    created = []
+    skipped = []
+    failed = []
+
+    # Collect all unique emails from salesmen + directors collections
+    all_emails: dict[str, str] = {}  # email -> collection name
+
+    for col_name in ("salesmen", "directors"):
+        cursor = db[col_name].find({}, {"email": 1, "firebase_uid": 1})
+        docs = await cursor.to_list(length=5000)
+        for doc in docs:
+            email = (doc.get("email") or "").strip().lower()
+            if email:
+                all_emails[email] = col_name
+
+    logging.info(f"provision-firebase-users: found {len(all_emails)} unique emails")
+
+    for email, col_name in all_emails.items():
+        try:
+            # Check if a Firebase account already exists
+            try:
+                existing = fb_auth.get_user_by_email(email)
+                skipped.append({"email": email, "uid": existing.uid, "reason": "already exists"})
+                # Still auto-link the UID into MongoDB if missing
+                pattern = f"^{_re.escape(email)}$"
+                doc = await db[col_name].find_one(
+                    {"email": {"$regex": pattern, "$options": "i"}, "firebase_uid": {"$exists": False}}
+                )
+                if doc:
+                    await db[col_name].update_one(
+                        {"_id": doc["_id"]},
+                        {"$set": {"firebase_uid": existing.uid}}
+                    )
+                continue
+            except fb_auth.UserNotFoundError:
+                pass  # doesn't exist yet – create it
+
+            fb_user = fb_auth.create_user(email=email, password=password)
+            created.append({"email": email, "uid": fb_user.uid})
+            logging.info(f"provision-firebase-users: created Firebase user {email} -> {fb_user.uid}")
+
+            # Auto-link the new UID into MongoDB
+            pattern = f"^{_re.escape(email)}$"
+            await db[col_name].update_one(
+                {"email": {"$regex": pattern, "$options": "i"}},
+                {"$set": {"firebase_uid": fb_user.uid}}
+            )
+
+        except Exception as e:
+            logging.error(f"provision-firebase-users: failed for {email}: {e}\n{_tb.format_exc()}")
+            failed.append({"email": email, "error": str(e)})
+
+    return {
+        "created": created,
+        "skipped": skipped,
+        "failed": failed,
+        "summary": {
+            "total_emails": len(all_emails),
+            "created_count": len(created),
+            "skipped_count": len(skipped),
+            "failed_count": len(failed),
+        }
+    }
+

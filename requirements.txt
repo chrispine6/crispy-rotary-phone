@@ -6,3 +6,4 @@ pydantic[email]
 uvicorn==0.31.1
 python-multipart==0.0.9
 python-dotenv==1.0.0
+firebase-admin==6.5.0
