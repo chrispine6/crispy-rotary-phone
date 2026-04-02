@@ -1693,6 +1693,83 @@ async def list_my_orders(
         logging.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
+# Get all teammates (salesmen under the same sales_manager) plus their orders
+@router.get("/salesman/team")
+async def get_salesman_team(
+    uid: str | None = Query(default=None),
+    email: str | None = Query(default=None),
+    db: AsyncIOMotorDatabase = Depends(get_db)
+):
+    """
+    For a salesman, return all other salesmen in the same team
+    (same sales_manager) along with their orders.
+    """
+    try:
+        import re
+
+        # 1. Identify calling salesman
+        caller = None
+        if uid:
+            caller = await db.salesmen.find_one({"firebase_uid": uid})
+        if not caller and email:
+            pattern = f"^{re.escape(email)}$"
+            caller = await db.salesmen.find_one({"email": {"$regex": pattern, "$options": "i"}})
+        if not caller:
+            raise HTTPException(status_code=404, detail="Salesman not found")
+
+        caller_id = str(caller["_id"])
+        manager_name = caller.get("sales_manager") or ""
+
+        # 2. Find all salesmen with the same sales_manager (case-insensitive)
+        if manager_name:
+            pattern = f"^{re.escape(manager_name)}$"
+            cursor = db.salesmen.find(
+                {"sales_manager": {"$regex": pattern, "$options": "i"}},
+                {"_id": 1, "name": 1, "email": 1, "phone": 1, "state": 1}
+            )
+        else:
+            # No manager set — just return the caller alone
+            cursor = db.salesmen.find(
+                {"_id": caller["_id"]},
+                {"_id": 1, "name": 1, "email": 1, "phone": 1, "state": 1}
+            )
+
+        teammates = await cursor.to_list(length=500)
+
+        # 3. For each teammate fetch their orders
+        result = []
+        for sm in teammates:
+            sm_id = str(sm["_id"])
+            orders_cursor = db.orders.find(
+                {"salesman_id": sm_id},
+                {"_id": 1, "order_number": 1, "dealer_name": 1, "order_date": 1,
+                 "status": 1, "total_amount": 1, "payment_status": 1}
+            ).sort("order_date", -1).limit(50)
+            orders = await orders_cursor.to_list(length=50)
+            orders_clean = [clean_object_ids(o) for o in orders]
+
+            result.append({
+                "id": sm_id,
+                "name": sm.get("name", ""),
+                "email": sm.get("email", ""),
+                "phone": sm.get("phone", ""),
+                "state": sm.get("state", ""),
+                "is_me": sm_id == caller_id,
+                "orders": orders_clean,
+            })
+
+        # Sort: current user first, then alphabetically
+        result.sort(key=lambda x: (0 if x["is_me"] else 1, x["name"].lower()))
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error in get_salesman_team: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+
 # Get current user profile and role
 @router.get("/me")
 async def get_me(
