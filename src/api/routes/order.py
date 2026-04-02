@@ -1693,6 +1693,20 @@ async def list_my_orders(
         logging.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
+# Alias: GET /salesman/my — returns the calling salesman's own orders
+@router.get("/salesman/my")
+async def get_salesman_my_orders(
+    uid: str | None = Query(default=None),
+    email: str | None = Query(default=None),
+    db: AsyncIOMotorDatabase = Depends(get_db)
+):
+    """
+    Convenience alias for /my-orders scoped to the mobile salesman app.
+    Identifies the caller by uid/email, then returns all their orders.
+    """
+    return await list_my_orders(uid=uid, email=email, salesman_id=None, db=db)
+
+
 # Get all teammates (salesmen under the same sales_manager) plus their orders
 @router.get("/salesman/team")
 async def get_salesman_team(
