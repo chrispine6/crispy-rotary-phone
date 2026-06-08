@@ -741,7 +741,7 @@ async def create_order(
         if any_discount and order_dict.get("discount_status") in (None, "", "approved"):
             order_dict["discount_status"] = "pending"
         if not any_discount:
-            order_dict["discount_status"] = "approved"
+            order_dict["discount_status"] = "pending"
         # --- END NEW LOGIC ---
         from datetime import datetime
         now = datetime.utcnow()
@@ -1734,11 +1734,11 @@ async def get_salesman_team(
         caller_id = str(caller["_id"])
         manager_name = caller.get("sales_manager") or ""
 
-        # 2. Find all salesmen with the same sales_manager (case-insensitive)
+        # 2. Find all active salesmen with the same sales_manager (case-insensitive)
         if manager_name:
             pattern = f"^{re.escape(manager_name)}$"
             cursor = db.salesmen.find(
-                {"sales_manager": {"$regex": pattern, "$options": "i"}},
+                {"sales_manager": {"$regex": pattern, "$options": "i"}, "active": {"$ne": False}},
                 {"_id": 1, "name": 1, "email": 1, "phone": 1, "state": 1}
             )
         else:
@@ -1756,11 +1756,25 @@ async def get_salesman_team(
             sm_id = str(sm["_id"])
             orders_cursor = db.orders.find(
                 {"salesman_id": sm_id},
-                {"_id": 1, "order_number": 1, "dealer_name": 1, "order_date": 1,
-                 "status": 1, "total_amount": 1, "payment_status": 1}
+                {"_id": 1, "order_number": 1, "order_code": 1, "dealer_name": 1,
+                 "dealer_id": 1, "order_date": 1, "created_at": 1, "status": 1,
+                 "discount_status": 1, "total_amount": 1, "total_price": 1,
+                 "discounted_total": 1, "discount": 1, "state": 1,
+                 "payment_status": 1, "products": 1}
             ).sort("order_date", -1).limit(50)
             orders = await orders_cursor.to_list(length=50)
-            orders_clean = [clean_object_ids(o) for o in orders]
+            orders_clean = []
+            for o in orders:
+                o = clean_object_ids(o)
+                for p in o.get("products", []):
+                    pid_str = str(p.get("product_id", ""))
+                    if not p.get("product_name") and pid_str:
+                        try:
+                            pdoc = await db.products.find_one({"_id": ObjectId(pid_str)}, {"name": 1})
+                            p["product_name"] = pdoc["name"] if pdoc else pid_str
+                        except Exception:
+                            p["product_name"] = pid_str
+                orders_clean.append(o)
 
             result.append({
                 "id": sm_id,
