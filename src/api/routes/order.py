@@ -1822,6 +1822,7 @@ async def get_me(
                 out = clean_object_ids(doc)
                 out["role"] = "director"
                 out["is_admin"] = False
+                out["must_change_password"] = bool(doc.get("must_change_password", False))
                 return out
         # 2. Try to find director by email
         if not doc and email:
@@ -1842,6 +1843,7 @@ async def get_me(
                 out = clean_object_ids(doc)
                 out["role"] = "director"
                 out["is_admin"] = False
+                out["must_change_password"] = bool(doc.get("must_change_password", False))
                 return out
         # 3. Try to find salesman by firebase_uid
         if uid:
@@ -1874,11 +1876,33 @@ async def get_me(
         out = clean_object_ids(doc)
         out["role"] = role
         out["is_admin"] = role == "admin"
+        out["must_change_password"] = bool(doc.get("must_change_password", False))
         logging.info(f"DEBUG: Returning user with role: {role}, full response: {out}")
         return out
     except Exception as e:
         logging.error(f"Error in /me: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
+
+@router.post("/me/password-changed")
+async def mark_password_changed(
+    uid: str | None = Query(default=None),
+    email: str | None = Query(default=None),
+    db: AsyncIOMotorDatabase = Depends(get_db)
+):
+    if not email and not uid:
+        raise HTTPException(status_code=400, detail="uid or email required")
+    for col in ("salesmen", "directors"):
+        doc = None
+        if uid:
+            doc = await db[col].find_one({"firebase_uid": uid})
+        if not doc and email:
+            import re
+            pattern = f"^{re.escape(email)}$"
+            doc = await db[col].find_one({"email": {"$regex": pattern, "$options": "i"}})
+        if doc:
+            await db[col].update_one({"_id": doc["_id"]}, {"$set": {"must_change_password": False}})
+            return {"success": True}
+    raise HTTPException(status_code=404, detail="User not found")
 
 # List orders for all salesmen under a Sales Manager (and include manager's own orders)
 @router.get("/manager/orders")

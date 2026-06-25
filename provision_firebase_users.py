@@ -80,10 +80,10 @@ async def provision(password: str, dry_run: bool = False):
                 if not dry_run:
                     fb_auth.update_user(existing.uid, password=password)
                     print(f"  RESET {email}  (uid={existing.uid}, password updated)")
-                    # Link UID if missing in MongoDB
+                    # Link UID if missing and mark password as needing change
                     await db[col].update_one(
-                        {"_id": doc_id, "firebase_uid": {"$exists": False}},
-                        {"$set": {"firebase_uid": existing.uid}}
+                        {"_id": doc_id},
+                        {"$set": {"firebase_uid": existing.uid, "must_change_password": True}}
                     )
                 else:
                     print(f"  DRY-RESET {email}  (already exists, would reset password)")
@@ -101,10 +101,10 @@ async def provision(password: str, dry_run: bool = False):
             print(f"  OK    {email}  -> uid={fb_user.uid}")
             created.append(email)
 
-            # Link UID into MongoDB
+            # Link UID into MongoDB and mark password as needing change
             await db[col].update_one(
                 {"_id": doc_id},
-                {"$set": {"firebase_uid": fb_user.uid}}
+                {"$set": {"firebase_uid": fb_user.uid, "must_change_password": True}}
             )
 
         except Exception as e:
