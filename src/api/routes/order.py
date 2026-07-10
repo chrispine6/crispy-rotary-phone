@@ -1870,6 +1870,9 @@ async def get_me(
         if not doc:
             logging.info(f"DEBUG: No user found with email {email} - denying access")
             raise HTTPException(status_code=403, detail="Access denied. Email not authorized for this system.")
+        if doc.get("active") == False:
+            logging.info(f"DEBUG: User {email} is deactivated - denying access")
+            raise HTTPException(status_code=403, detail="Your account has been deactivated. Please contact your administrator.")
         role = doc.get("role")
         if role not in ("admin", "sales_manager", "salesman"):
             role = "admin" if doc.get("admin") else "salesman"
