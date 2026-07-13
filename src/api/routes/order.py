@@ -1293,7 +1293,13 @@ async def update_salesman(
 
         firebase_warning = None
         if email_changed:
-            firebase_warning = _sync_firebase_email(existing.get("firebase_uid"), old_email, new_email)
+            old_uid = existing.get("firebase_uid")
+            firebase_warning = _sync_firebase_email(old_uid, old_email, new_email)
+            if not firebase_warning and old_uid:
+                # Firebase account was updated in place under the same uid - restore the
+                # link immediately (the payload above may have nulled it) instead of
+                # waiting for their next login to re-link it.
+                await db.salesmen.update_one({"_id": ObjectId(salesman_id)}, {"$set": {"firebase_uid": old_uid}})
 
         updated_salesman = await db.salesmen.find_one({"_id": ObjectId(salesman_id)})
         out = clean_object_ids(updated_salesman)
@@ -1563,7 +1569,10 @@ async def update_sales_manager(
 
         firebase_warning = None
         if email_changed:
-            firebase_warning = _sync_firebase_email(existing.get("firebase_uid"), old_email, new_email)
+            old_uid = existing.get("firebase_uid")
+            firebase_warning = _sync_firebase_email(old_uid, old_email, new_email)
+            if not firebase_warning and old_uid:
+                await db.sales_managers.update_one({"_id": ObjectId(manager_id)}, {"$set": {"firebase_uid": old_uid}})
 
         updated = await db.sales_managers.find_one({"_id": ObjectId(manager_id)})
         out = clean_object_ids(updated)
@@ -1650,7 +1659,10 @@ async def update_director(
 
         firebase_warning = None
         if email_changed:
-            firebase_warning = _sync_firebase_email(existing.get("firebase_uid"), old_email, new_email)
+            old_uid = existing.get("firebase_uid")
+            firebase_warning = _sync_firebase_email(old_uid, old_email, new_email)
+            if not firebase_warning and old_uid:
+                await db.directors.update_one({"_id": ObjectId(director_id)}, {"$set": {"firebase_uid": old_uid}})
 
         updated = await db.directors.find_one({"_id": ObjectId(director_id)})
         out = clean_object_ids(updated)
