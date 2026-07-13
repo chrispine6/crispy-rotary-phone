@@ -2406,3 +2406,71 @@ async def provision_firebase_users(
         }
     }
 
+@router.post("/admin/fix-firebase-email")
+async def fix_firebase_email(
+    payload: dict = Body(...),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    user=Depends(admin_check)
+):
+    """
+    One-off repair for accounts whose email was changed in the admin panel BEFORE the
+    Firebase email-sync fix existed: Mongo shows the new email, but the real Firebase
+    Auth login credential is still under the old email (and firebase_uid may have been
+    cleared by the old frontend workaround). This finds the Firebase account by the old
+    email, moves it to the new email, and re-links firebase_uid wherever new_email
+    currently lives (salesmen / directors / sales_managers).
+
+    Body: { "old_email": "<email they used to log in with>", "new_email": "<current email in Mongo>" }
+    """
+    old_email = (payload or {}).get("old_email", "").strip()
+    new_email = (payload or {}).get("new_email", "").strip()
+    if not old_email or not new_email:
+        raise HTTPException(status_code=400, detail="old_email and new_email are required")
+
+    try:
+        from firebase_admin import auth as fb_auth
+    except ImportError:
+        raise HTTPException(
+            status_code=500,
+            detail="firebase-admin package is not installed. Run: pip install firebase-admin"
+        )
+
+    try:
+        _init_firebase_admin()
+    except Exception as init_err:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Firebase Admin SDK could not be initialised: {init_err}. "
+                "Make sure firebase-service-account.json exists at the project root."
+            )
+        )
+
+    try:
+        fb_user = fb_auth.get_user_by_email(old_email)
+    except fb_auth.UserNotFoundError:
+        raise HTTPException(status_code=404, detail=f"No Firebase account found with email {old_email}")
+
+    try:
+        fb_auth.update_user(fb_user.uid, email=new_email)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update Firebase email: {e}")
+
+    import re as _re
+    pattern = f"^{_re.escape(new_email)}$"
+    relinked_in = []
+    for col_name in ("salesmen", "directors", "sales_managers"):
+        result = await db[col_name].update_one(
+            {"email": {"$regex": pattern, "$options": "i"}},
+            {"$set": {"firebase_uid": fb_user.uid}}
+        )
+        if result.matched_count:
+            relinked_in.append(col_name)
+
+    return {
+        "success": True,
+        "firebase_uid": fb_user.uid,
+        "firebase_login_email_now": new_email,
+        "mongo_relinked_in": relinked_in,
+    }
+
