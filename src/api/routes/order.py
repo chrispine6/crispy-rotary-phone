@@ -2474,3 +2474,76 @@ async def fix_firebase_email(
         "mongo_relinked_in": relinked_in,
     }
 
+@router.post("/admin/relink-firebase-user")
+async def relink_firebase_user(
+    payload: dict = Body(...),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    user=Depends(admin_check)
+):
+    """
+    Repair a single user stuck with firebase_uid: null (no old email known, unlike
+    /admin/fix-firebase-email). Looks up a Firebase account under their CURRENT email:
+      - If one exists, just re-links its uid into Mongo.
+      - If none exists, creates one with temp_password and links the new uid.
+    In both cases must_change_password is set so they're prompted to set their own
+    password on next login.
+
+    Body: { "email": "<current email in Mongo>", "temp_password": "<required only if no Firebase account exists yet>" }
+    """
+    email = (payload or {}).get("email", "").strip()
+    temp_password = (payload or {}).get("temp_password", "").strip()
+    if not email:
+        raise HTTPException(status_code=400, detail="email is required")
+
+    try:
+        from firebase_admin import auth as fb_auth
+    except ImportError:
+        raise HTTPException(
+            status_code=500,
+            detail="firebase-admin package is not installed. Run: pip install firebase-admin"
+        )
+
+    try:
+        _init_firebase_admin()
+    except Exception as init_err:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Firebase Admin SDK could not be initialised: {init_err}. "
+                "Make sure firebase-service-account.json exists at the project root."
+            )
+        )
+
+    created = False
+    try:
+        fb_user = fb_auth.get_user_by_email(email)
+    except fb_auth.UserNotFoundError:
+        if not temp_password or len(temp_password) < 6:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No Firebase account exists for {email}. Provide temp_password (min 6 chars) to create one."
+            )
+        try:
+            fb_user = fb_auth.create_user(email=email, password=temp_password)
+            created = True
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to create Firebase user: {e}")
+
+    import re as _re
+    pattern = f"^{_re.escape(email)}$"
+    relinked_in = []
+    for col_name in ("salesmen", "directors", "sales_managers"):
+        result = await db[col_name].update_one(
+            {"email": {"$regex": pattern, "$options": "i"}},
+            {"$set": {"firebase_uid": fb_user.uid, "must_change_password": True}}
+        )
+        if result.matched_count:
+            relinked_in.append(col_name)
+
+    return {
+        "success": True,
+        "firebase_account_created": created,
+        "firebase_uid": fb_user.uid,
+        "mongo_relinked_in": relinked_in,
+    }
+
