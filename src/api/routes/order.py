@@ -41,6 +41,63 @@ def clean_object_ids(obj):
     else:
         return obj
 
+# Idempotently initialise the Firebase Admin SDK. Tries, in order:
+#   1. FIREBASE_SERVICE_ACCOUNT_JSON env var (the key as a raw JSON string) - for hosts
+#      with no practical way to drop a key file into the container (e.g. App Platform).
+#   2. A firebase-service-account.json file at the project root (same filename/location
+#      provision_firebase_users.py already expects) - for droplets/VMs, just drop the
+#      file there via the web console and no env var is needed.
+#   3. GOOGLE_APPLICATION_CREDENTIALS / Application Default Credentials as a last resort.
+def _init_firebase_admin():
+    import firebase_admin
+    try:
+        firebase_admin.get_app()
+        return
+    except ValueError:
+        pass
+
+    import json
+    import os
+    from firebase_admin import credentials as fb_cred
+
+    raw = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON")
+    if raw:
+        firebase_admin.initialize_app(fb_cred.Certificate(json.loads(raw)))
+        return
+
+    # src/api/routes/order.py -> project root is three levels up
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    local_key_path = os.path.join(project_root, "firebase-service-account.json")
+    if os.path.exists(local_key_path):
+        firebase_admin.initialize_app(fb_cred.Certificate(local_key_path))
+        return
+
+    firebase_admin.initialize_app()
+
+# Helper to keep a user's Firebase Auth login email in sync with an admin-panel email edit.
+# Mongo is just profile data; Firebase is what actually gates sign-in, so changing the
+# email in Mongo alone leaves the user unable to log in with their new address.
+def _sync_firebase_email(firebase_uid: str | None, old_email: str | None, new_email: str):
+    try:
+        from firebase_admin import auth as fb_auth
+        _init_firebase_admin()
+
+        target_uid = firebase_uid
+        if not target_uid and old_email:
+            try:
+                target_uid = fb_auth.get_user_by_email(old_email).uid
+            except fb_auth.UserNotFoundError:
+                target_uid = None
+
+        if not target_uid:
+            return f"No Firebase account found for {old_email or 'this user'}; new email was saved but not synced for login."
+
+        fb_auth.update_user(target_uid, email=new_email)
+        return None
+    except Exception as e:
+        logging.error(f"Failed to sync Firebase email (uid={firebase_uid}, old_email={old_email}) to {new_email}: {e}")
+        return f"Saved, but the Firebase login email could not be synced: {e}"
+
 # Helper to resolve current user as sales manager and fetch their team salesman ids
 async def _resolve_manager_team_ids(db: AsyncIOMotorDatabase, uid: str | None, email: str | None):
     try:
@@ -1212,20 +1269,39 @@ async def update_salesman(
     """Update a salesman (admin only)."""
     try:
         from datetime import datetime
+
+        existing = await db.salesmen.find_one({"_id": ObjectId(salesman_id)})
+        if not existing:
+            raise HTTPException(status_code=404, detail="Salesman not found")
+
         salesman_data["updated_at"] = datetime.utcnow()
         # Role support on update
         role = salesman_data.get("role")
         if role in ("admin", "sales_manager", "salesman"):
             salesman_data["admin"] = True if role == "admin" else False
-        
+
+        new_email = (salesman_data.get("email") or "").strip()
+        old_email = (existing.get("email") or "").strip()
+        email_changed = bool(new_email) and new_email.lower() != old_email.lower()
+
         result = await db.salesmen.update_one(
             {"_id": ObjectId(salesman_id)},
             {"$set": salesman_data}
         )
-        if result.modified_count == 1:
-            updated_salesman = await db.salesmen.find_one({"_id": ObjectId(salesman_id)})
-            return clean_object_ids(updated_salesman)
-        raise HTTPException(status_code=404, detail="Salesman not found")
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Salesman not found")
+
+        firebase_warning = None
+        if email_changed:
+            firebase_warning = _sync_firebase_email(existing.get("firebase_uid"), old_email, new_email)
+
+        updated_salesman = await db.salesmen.find_one({"_id": ObjectId(salesman_id)})
+        out = clean_object_ids(updated_salesman)
+        if firebase_warning:
+            out["_firebase_email_sync_warning"] = firebase_warning
+        return out
+    except HTTPException:
+        raise
     except Exception as e:
         logging.error(f"Error updating salesman: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
@@ -1470,12 +1546,30 @@ async def update_sales_manager(
 ):
     try:
         from datetime import datetime
+
+        existing = await db.sales_managers.find_one({"_id": ObjectId(manager_id)})
+        if not existing:
+            raise HTTPException(status_code=404, detail="Sales Manager not found")
+
         payload["updated_at"] = datetime.utcnow()
+
+        new_email = (payload.get("email") or "").strip()
+        old_email = (existing.get("email") or "").strip()
+        email_changed = bool(new_email) and new_email.lower() != old_email.lower()
+
         result = await db.sales_managers.update_one({"_id": ObjectId(manager_id)}, {"$set": payload})
         if result.matched_count == 0:
             raise HTTPException(status_code=404, detail="Sales Manager not found")
+
+        firebase_warning = None
+        if email_changed:
+            firebase_warning = _sync_firebase_email(existing.get("firebase_uid"), old_email, new_email)
+
         updated = await db.sales_managers.find_one({"_id": ObjectId(manager_id)})
-        return clean_object_ids(updated)
+        out = clean_object_ids(updated)
+        if firebase_warning:
+            out["_firebase_email_sync_warning"] = firebase_warning
+        return out
     except HTTPException:
         raise
     except Exception as e:
@@ -1539,12 +1633,30 @@ async def update_director(
 ):
     try:
         from datetime import datetime
+
+        existing = await db.directors.find_one({"_id": ObjectId(director_id)})
+        if not existing:
+            raise HTTPException(status_code=404, detail="Director not found")
+
         payload["updated_at"] = datetime.utcnow()
+
+        new_email = (payload.get("email") or "").strip()
+        old_email = (existing.get("email") or "").strip()
+        email_changed = bool(new_email) and new_email.lower() != old_email.lower()
+
         result = await db.directors.update_one({"_id": ObjectId(director_id)}, {"$set": payload})
         if result.matched_count == 0:
             raise HTTPException(status_code=404, detail="Director not found")
+
+        firebase_warning = None
+        if email_changed:
+            firebase_warning = _sync_firebase_email(existing.get("firebase_uid"), old_email, new_email)
+
         updated = await db.directors.find_one({"_id": ObjectId(director_id)})
-        return clean_object_ids(updated)
+        out = clean_object_ids(updated)
+        if firebase_warning:
+            out["_firebase_email_sync_warning"] = firebase_warning
+        return out
     except HTTPException:
         raise
     except Exception as e:
@@ -1870,7 +1982,11 @@ async def get_me(
         if not doc:
             logging.info(f"DEBUG: No user found with email {email} - denying access")
             raise HTTPException(status_code=403, detail="Access denied. Email not authorized for this system.")
-        if doc.get("active") == False:
+        active_val = doc.get("active")
+        is_deactivated = active_val is False or (
+            isinstance(active_val, str) and active_val.strip().lower() in ("no", "false", "inactive", "0")
+        )
+        if is_deactivated:
             logging.info(f"DEBUG: User {email} is deactivated - denying access")
             raise HTTPException(status_code=403, detail="Your account has been deactivated. Please contact your administrator.")
         role = doc.get("role")
@@ -1882,6 +1998,8 @@ async def get_me(
         out["must_change_password"] = bool(doc.get("must_change_password", False))
         logging.info(f"DEBUG: Returning user with role: {role}, full response: {out}")
         return out
+    except HTTPException:
+        raise
     except Exception as e:
         logging.error(f"Error in /me: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
@@ -2206,30 +2324,23 @@ async def provision_firebase_users(
         raise HTTPException(status_code=400, detail="password must be at least 6 characters")
 
     try:
-        import firebase_admin
-        from firebase_admin import auth as fb_auth, credentials as fb_cred
+        from firebase_admin import auth as fb_auth
     except ImportError:
         raise HTTPException(
             status_code=500,
             detail="firebase-admin package is not installed. Run: pip install firebase-admin"
         )
 
-    # Initialise Firebase Admin SDK (idempotent – won't re-init if already done)
     try:
-        firebase_admin.get_app()
-    except ValueError:
-        # No app initialised yet – use Application Default Credentials or
-        # GOOGLE_APPLICATION_CREDENTIALS env variable pointing to the service-account JSON
-        try:
-            firebase_admin.initialize_app()
-        except Exception as init_err:
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    f"Firebase Admin SDK could not be initialised: {init_err}. "
-                    "Set GOOGLE_APPLICATION_CREDENTIALS to the path of your service-account JSON file."
-                )
+        _init_firebase_admin()
+    except Exception as init_err:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Firebase Admin SDK could not be initialised: {init_err}. "
+                "Set FIREBASE_SERVICE_ACCOUNT_JSON (or GOOGLE_APPLICATION_CREDENTIALS) with your service-account credentials."
             )
+        )
 
     created = []
     skipped = []
