@@ -64,6 +64,7 @@ class ProductSimpleResponse(BaseModel):
     id: PyObjectId = Field(alias="_id")
     name: str
     gst_percentage: float
+    category: Optional[str] = None
 
     class Config:
         populate_by_name = True

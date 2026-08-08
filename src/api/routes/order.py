@@ -402,7 +402,7 @@ async def get_all_products(
     # For each unique name, get one document to fetch its _id (first occurrence)
     products = []
     for name in unique_names:
-        doc = await db.products.find_one({"name": name}, {"_id": 1, "name": 1, "gst_percentage": 1})
+        doc = await db.products.find_one({"name": name}, {"_id": 1, "name": 1, "gst_percentage": 1, "category": 1})
         if doc:
             products.append(doc)
     
