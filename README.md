@@ -24,8 +24,7 @@ Update src/config/settings.py with your MongoDB Atlas credentials or set the MON
 
 
 Run the server:
-python src/main.py
-
+uvicorn src.main:app --reload --host 0.0.0.0 --port 8000  
 
 Access the API:
 

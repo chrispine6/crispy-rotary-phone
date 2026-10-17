@@ -1858,19 +1858,47 @@ async def get_salesman_team(
         caller_id = str(caller["_id"])
         manager_name = caller.get("sales_manager") or ""
 
-        # 2. Find all active salesmen with the same sales_manager (case-insensitive)
+        # 2. Find all other salesmen on the same team. Team membership is
+        # authoritatively tracked on the sales_managers doc's salesmen_ids
+        # array (set from the admin's "Sales Managers" > Team roster UI), but
+        # the salesmen.sales_manager name field (set when a salesman is
+        # assigned a manager directly, e.g. on creation) is populated
+        # independently and can drift out of sync with it — a salesman added
+        # to a team only via the roster UI would otherwise show up alone
+        # here. Union both sources instead of trusting either alone.
+        team_ids = set()
+
+        mgr_doc = await db.sales_managers.find_one({"salesmen_ids": caller_id})
+        if not mgr_doc:
+            try:
+                mgr_doc = await db.sales_managers.find_one({"salesmen_ids": ObjectId(caller_id)})
+            except Exception:
+                mgr_doc = None
+        if mgr_doc:
+            team_ids.update(str(x) for x in (mgr_doc.get("salesmen_ids") or []) if x)
+
         if manager_name:
             pattern = f"^{re.escape(manager_name)}$"
-            cursor = db.salesmen.find(
+            name_cursor = db.salesmen.find(
                 {"sales_manager": {"$regex": pattern, "$options": "i"}, "active": {"$ne": False}},
-                {"_id": 1, "name": 1, "email": 1, "phone": 1, "state": 1}
+                {"_id": 1}
             )
-        else:
-            # No manager set — just return the caller alone
-            cursor = db.salesmen.find(
-                {"_id": caller["_id"]},
-                {"_id": 1, "name": 1, "email": 1, "phone": 1, "state": 1}
-            )
+            name_rows = await name_cursor.to_list(length=2000)
+            team_ids.update(str(r["_id"]) for r in name_rows if r.get("_id"))
+
+        team_ids.add(caller_id)
+
+        object_ids = []
+        for tid in team_ids:
+            try:
+                object_ids.append(ObjectId(tid))
+            except Exception:
+                pass
+
+        cursor = db.salesmen.find(
+            {"_id": {"$in": object_ids}, "active": {"$ne": False}},
+            {"_id": 1, "name": 1, "email": 1, "phone": 1, "state": 1}
+        )
 
         teammates = await cursor.to_list(length=500)
 
